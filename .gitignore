@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+*.swp
+*.swo
+.ruff_cache/
+.pytest_cache/
+api_usage.png
+api_usage_preview.png
+kimi_usage.png
+deepseek_usage.png
+zectrix-usage.log
