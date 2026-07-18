@@ -634,7 +634,7 @@ def _draw_kimi(
         draw,
         text=plan_text,
         left=14 + title_width + 7,
-        middle=61,
+        middle=60,
     )
 
     _draw_text(
@@ -717,7 +717,7 @@ def _draw_deepseek(
         draw,
         text="API",
         left=14 + title_width + 7,
-        middle=_DEEPSEEK_TOP + 7,
+        middle=_DEEPSEEK_TOP + 6,
     )
     _draw_text(
         draw,
