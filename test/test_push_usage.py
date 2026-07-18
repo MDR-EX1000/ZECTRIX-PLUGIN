@@ -1,7 +1,9 @@
 import io
 import json
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
@@ -189,6 +191,83 @@ class PushUsageTests(unittest.TestCase):
                 _usage_png(),
                 page_id="6",
             )
+
+    def test_writes_image_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "nested" / "api_usage.png"
+            payload = b"complete-image"
+
+            push_usage.write_image_atomic(output_path, payload)
+
+            self.assertEqual(output_path.read_bytes(), payload)
+            self.assertEqual(
+                list(output_path.parent.glob(".api_usage.png.*.tmp")),
+                [],
+            )
+
+    def test_retries_transient_push_failure_once(self):
+        success = {"pageId": "1"}
+        transient = push_usage.ZectrixPushError(
+            "temporary network failure",
+            retryable=True,
+        )
+        with (
+            patch(
+                "push_usage.push_image",
+                side_effect=[transient, success],
+            ) as mocked_push,
+            patch("push_usage.time.sleep") as mocked_sleep,
+        ):
+            result = push_usage.push_image_with_retry(
+                "zt-secret",
+                "AA:BB:CC:DD:EE:FF",
+                _usage_png(),
+                retry_delay=5.0,
+            )
+
+        self.assertEqual(result, success)
+        self.assertEqual(mocked_push.call_count, 2)
+        mocked_sleep.assert_called_once_with(5.0)
+
+    def test_does_not_retry_non_transient_push_failure(self):
+        failure = push_usage.ZectrixPushError("invalid api key")
+        with patch(
+            "push_usage.push_image",
+            side_effect=failure,
+        ) as mocked_push:
+            with self.assertRaisesRegex(
+                push_usage.ZectrixPushError,
+                "invalid api key",
+            ):
+                push_usage.push_image_with_retry(
+                    "zt-secret",
+                    "AA:BB:CC:DD:EE:FF",
+                    _usage_png(),
+                )
+
+        self.assertEqual(mocked_push.call_count, 1)
+
+    def test_registered_designs_use_fixed_production_pages(self):
+        self.assertEqual(
+            push_usage.resolve_page_id("rotate"),
+            "1",
+        )
+        self.assertEqual(
+            push_usage.resolve_page_id("daily-grid"),
+            "1",
+        )
+        self.assertEqual(
+            push_usage.resolve_page_id("ring-gauge"),
+            "1",
+        )
+        self.assertEqual(
+            push_usage.resolve_page_id("big"),
+            "2",
+        )
+        with self.assertRaisesRegex(ValueError, "fixed to page 2"):
+            push_usage.resolve_page_id("big", "1")
+        with self.assertRaisesRegex(ValueError, "fixed to page 1"):
+            push_usage.resolve_page_id("rotate", "2")
 
 
 if __name__ == "__main__":

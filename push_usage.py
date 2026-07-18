@@ -7,6 +7,8 @@ import io
 import json
 import os
 import sys
+import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,10 +30,16 @@ ZECTRIX_API_BASE_URL = "https://cloud.zectrix.com"
 ZECTRIX_API_KEY_FILE = "~/.config/zectrix/api_key"
 ZECTRIX_DEVICE_ID_FILE = "~/.config/zectrix/device_id"
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
+DEFAULT_PUSH_RETRIES = 1
+DEFAULT_PUSH_RETRY_DELAY = 5.0
 
 
 class ZectrixPushError(RuntimeError):
     """Raised when a Zectrix image cannot be validated or pushed."""
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _read_config_file(path: str | Path, label: str) -> str | None:
@@ -83,6 +91,14 @@ def _response_message(payload: Any) -> str | None:
     return None
 
 
+def _is_retryable_status(value: Any) -> bool:
+    try:
+        status = int(value)
+    except (TypeError, ValueError):
+        return False
+    return status in {408, 429, 500, 502, 503, 504}
+
+
 def _request_json(
     request: Request,
     *,
@@ -104,21 +120,29 @@ def _request_json(
             _redact(
                 f"Zectrix request failed with HTTP {exc.code}{detail}",
                 api_key,
-            )
+            ),
+            retryable=_is_retryable_status(exc.code),
         ) from exc
     except URLError as exc:
         reason = getattr(exc, "reason", exc)
         raise ZectrixPushError(
-            _redact(f"Zectrix request failed: {reason}", api_key)
+            _redact(f"Zectrix request failed: {reason}", api_key),
+            retryable=True,
         ) from exc
-    except TimeoutError as exc:
-        raise ZectrixPushError("Zectrix request timed out") from exc
+    except (TimeoutError, OSError) as exc:
+        raise ZectrixPushError(
+            "Zectrix request timed out"
+            if isinstance(exc, TimeoutError)
+            else f"Zectrix request failed: {exc}",
+            retryable=True,
+        ) from exc
 
     try:
         payload = json.loads(raw_body)
     except json.JSONDecodeError as exc:
         raise ZectrixPushError(
-            "Zectrix response is not valid JSON"
+            "Zectrix response is not valid JSON",
+            retryable=True,
         ) from exc
     if not isinstance(payload, dict):
         raise ZectrixPushError(
@@ -133,7 +157,8 @@ def _request_json(
             _redact(
                 f"Zectrix request failed with code {code}{detail}",
                 api_key,
-            )
+            ),
+            retryable=_is_retryable_status(code),
         )
     return payload
 
@@ -252,6 +277,34 @@ def validate_image(image_bytes: bytes) -> None:
         )
 
 
+def write_image_atomic(output_path: str | Path, image_bytes: bytes) -> None:
+    """Replace an output PNG atomically after it has been fully written."""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(image_bytes)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def _multipart_body(
     image_bytes: bytes,
     *,
@@ -342,6 +395,80 @@ def push_image(
     return data
 
 
+def push_image_with_retry(
+    api_key: str,
+    device_id: str,
+    image_bytes: bytes,
+    *,
+    api_base_url: str = ZECTRIX_API_BASE_URL,
+    page_id: str = "1",
+    dither: bool = True,
+    timeout: float = 15.0,
+    retries: int = DEFAULT_PUSH_RETRIES,
+    retry_delay: float = DEFAULT_PUSH_RETRY_DELAY,
+) -> dict[str, Any]:
+    """Push an image and retry transient failures once by default."""
+
+    if retries < 0:
+        raise ValueError("retries must be greater than or equal to zero")
+    if retry_delay < 0:
+        raise ValueError("retry_delay must be greater than or equal to zero")
+
+    for attempt in range(retries + 1):
+        try:
+            return push_image(
+                api_key,
+                device_id,
+                image_bytes,
+                api_base_url=api_base_url,
+                page_id=page_id,
+                dither=dither,
+                timeout=timeout,
+            )
+        except ZectrixPushError as exc:
+            is_last_attempt = attempt >= retries
+            if is_last_attempt or not exc.retryable:
+                raise
+            print(
+                "warning: transient Zectrix push failure; "
+                f"retrying in {retry_delay:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(retry_delay)
+
+    raise AssertionError("retry loop must return or raise")
+
+
+def resolve_page_id(
+    design: str,
+    requested_page_id: str | None = None,
+) -> str:
+    """Route the registered designs to their fixed production pages."""
+
+    normalized = design.strip().lower()
+    fixed_page = {
+        "rotate": "1",
+        "daily-grid": "1",
+        "ring-gauge": "1",
+        "big": "2",
+    }.get(normalized)
+    if fixed_page is not None:
+        if (
+            requested_page_id is not None
+            and requested_page_id != fixed_page
+        ):
+            raise ValueError(
+                f"design {normalized!r} is fixed to page {fixed_page}; "
+                f"received page {requested_page_id}"
+            )
+        return fixed_page
+    return (
+        requested_page_id
+        or os.getenv("ZECTRIX_PAGE_ID", "1").strip()
+        or "1"
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Push the 800x600 API usage dashboard to Zectrix.",
@@ -419,9 +546,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--page-id",
-        default=os.getenv("ZECTRIX_PAGE_ID", "1"),
+        default=None,
         choices=("1", "2", "3", "4", "5"),
-        help="Persistent page number (default: 1)",
+        help=(
+            "Persistent page number; rotate/V1/V2 are fixed to page 1, "
+            "V3 big is fixed to page 2"
+        ),
     )
     dither_group = parser.add_mutually_exclusive_group()
     dither_group.add_argument(
@@ -462,6 +592,7 @@ def _print_devices(devices: list[dict[str, Any]]) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
+        page_id = resolve_page_id(args.design, args.page_id)
         if args.list_devices:
             api_key = resolve_api_key(args.api_key_file)
             devices = list_zectrix_devices(
@@ -487,8 +618,7 @@ def main(argv: list[str] | None = None) -> int:
 
         validate_image(image_bytes)
         if output_path is not None:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(image_bytes)
+            write_image_atomic(output_path, image_bytes)
 
         if collection is not None:
             for name, message in sorted(collection.errors.items()):
@@ -513,12 +643,12 @@ def main(argv: list[str] | None = None) -> int:
             api_base_url=args.api_base_url,
             timeout=args.timeout,
         )
-        result = push_image(
+        result = push_image_with_retry(
             api_key,
             device_id,
             image_bytes,
             api_base_url=args.api_base_url,
-            page_id=args.page_id,
+            page_id=page_id,
             dither=args.dither,
             timeout=args.timeout,
         )
@@ -533,10 +663,10 @@ def main(argv: list[str] | None = None) -> int:
 
     pushed_pages = result.get("pushedPages", "?")
     total_pages = result.get("totalPages", "?")
-    page_id = result.get("pageId", args.page_id)
+    pushed_page_id = result.get("pageId", page_id)
     print(
         f"Pushed {pushed_pages}/{total_pages} page(s) "
-        f"to {device_id} as page {page_id}"
+        f"to {device_id} as page {pushed_page_id}"
     )
     return 0
 

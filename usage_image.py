@@ -48,11 +48,44 @@ _V2_CONTENT_RIGHT = _LOGICAL_WIDTH - _V2_MARGIN
 _V2_GAUGE_CENTER_Y = 94
 _V2_GAUGE_RADIUS = 48
 _V2_GAUGE_ARC_WIDTH = 9
+_V3_HEADER_MIDDLE = 16
+_V3_HEADER_RULE_Y = 34
+_V3_KIMI_LABEL_TOP = 42
+_V3_KIMI_NUMBER_BASELINE = 160
+_V3_KIMI_BAR_LEFT = 14
+_V3_KIMI_BAR_RIGHT = 222
+_V3_KIMI_BAR_TOP = 174
+_V3_KIMI_BAR_BOTTOM = 184
+_V3_KIMI_CAPTION_TOP = 192
+_V3_DIVIDER_X = 237
+_V3_DIVIDER_TOP = 45
+_V3_DIVIDER_BOTTOM = 200
+_V3_RIGHT_COLUMN_X = 250
+_V3_DEEPSEEK_BAND_TOP = 205
+_V3_DEEPSEEK_TITLE_TOP = 212
+_V3_DEEPSEEK_LABEL_TOP = 236
+_V3_DEEPSEEK_VALUE_TOP = 250
+_V3_DEEPSEEK_DETAIL_TOP = 281
+_V3_DEEPSEEK_SEPARATOR_TOP = 238
+_V3_DEEPSEEK_SEPARATOR_BOTTOM = 280
+_V3_CREDIT_MIDDLE = 162
+_V3_CREDIT_TEXT_SIZE = 9
+_V3_CREDIT_LOGO_SIZE = 18
+_V3_CREDIT_TEXT_LOGO_GAP = 6
+_V3_CREDIT_LOGO_GAP = 5
+_V3_CREDIT_FILL = 80
+_V3_CREDIT_X_BIAS = 8
+_V3_CREDIT_LOGO_X_BIAS = 6
+_V3_CREDIT_Y_BIAS = 6
+_CHIP_RADIUS = 2
 _ONE_DECIMAL = Decimal("0.1")
 _WHOLE_NUMBER = Decimal("1")
 _DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
 KIMI_API_KEY_FILE = "~/.config/zectrix/kimi_api_key"
 _FONT_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+_LOGO_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "logos"
+_V3_KIMI_LOGO_FILE = _LOGO_ASSET_DIR / "kimi.png"
+_V3_DEEPSEEK_LOGO_FILE = _LOGO_ASSET_DIR / "deepseek.png"
 _MONTH_NAMES = (
     "JAN",
     "FEB",
@@ -116,6 +149,11 @@ _FONT_SLOGAN = (
     str(_FONT_ASSET_DIR / "msyh.ttc"),
     str(_FONT_ASSET_DIR / "NotoSansSC-Slogan-Bold.otf"),
 )
+_FONT_CREDIT = (
+    "/usr/share/fonts/truetype/lato/Lato-Italic.ttf",
+    "/usr/share/fonts/truetype/lato/Lato-LightItalic.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+)
 
 
 class UsageImageError(RuntimeError):
@@ -139,6 +177,7 @@ class UsageDesign(Protocol):
 
     name: str
     description: str
+    auto_rotate: bool
 
     def render(self, context: RenderContext) -> bytes:
         """Render one complete PNG from a context."""
@@ -149,6 +188,7 @@ class _FunctionDesign:
     name: str
     description: str
     renderer: Callable[[RenderContext], bytes]
+    auto_rotate: bool = True
 
     def render(self, context: RenderContext) -> bytes:
         return self.renderer(context)
@@ -162,6 +202,7 @@ def register_design(
     renderer: Callable[[RenderContext], bytes],
     *,
     description: str = "",
+    auto_rotate: bool = True,
 ) -> None:
     """Register a named visual design.
 
@@ -182,6 +223,7 @@ def register_design(
         name=normalized,
         description=description.strip(),
         renderer=renderer,
+        auto_rotate=auto_rotate,
     )
 
 
@@ -220,7 +262,8 @@ def resolve_design_name(
     """Resolve an explicit design name or the automatic daily rotation."""
 
     normalized = design.strip().lower()
-    available = tuple(designs) if designs is not None else list_designs()
+    using_custom_designs = designs is not None
+    available = tuple(designs) if using_custom_designs else list_designs()
     if not available:
         raise UsageImageError("No usage image designs are registered")
     normalized_names: list[str] = []
@@ -233,8 +276,18 @@ def resolve_design_name(
         normalized_names.append(item_name)
     by_name = dict(zip(normalized_names, available))
     if normalized == "rotate":
-        return normalized_names[
-            design_index_for_day(moment, len(available))
+        rotating = (
+            available
+            if using_custom_designs
+            else tuple(item for item in available if item.auto_rotate)
+        )
+        if not rotating:
+            raise UsageImageError(
+                "No usage image designs participate in automatic rotation"
+            )
+        rotating_names = [item.name.strip().lower() for item in rotating]
+        return rotating_names[
+            design_index_for_day(moment, len(rotating_names))
         ]
     if normalized not in by_name:
         available_names = ", ".join(by_name) or "none"
@@ -320,6 +373,7 @@ def _font(
         "black": _FONT_BLACK,
         "mono": _FONT_MONO,
         "mono-regular": _FONT_MONO_REGULAR,
+        "credit": _FONT_CREDIT,
         "slogan": (
             *((configured_slogan_font,) if configured_slogan_font else ()),
             *_FONT_SLOGAN,
@@ -534,6 +588,24 @@ def _fit_text(
     )
 
 
+def _draw_chip_background(
+    draw: _Canvas,
+    *,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    fill: int,
+) -> None:
+    """Draw a small-radius chip without turning it into a pill."""
+
+    draw.draw.rounded_rectangle(
+        (_s(left), _s(top), _s(right), _s(bottom)),
+        radius=max(1, _s(_CHIP_RADIUS)),
+        fill=fill,
+    )
+
+
 def _draw_chip(
     draw: _Canvas,
     *,
@@ -550,8 +622,12 @@ def _draw_chip(
     top = middle - size / 2 - pad_y
     bottom = middle + size / 2 + pad_y
     right = left + text_width + 2 * pad_x
-    draw.rectangle(
-        (_s(left), _s(top), _s(right), _s(bottom)),
+    _draw_chip_background(
+        draw,
+        left=left,
+        top=top,
+        right=right,
+        bottom=bottom,
         fill=0,
     )
     draw.text(
@@ -860,8 +936,12 @@ def _draw_v2_chip(
         left = right - text_width - 2 * pad_x
     top = middle - cap_height / 2 - pad_y
     bottom = middle + cap_height / 2 + pad_y
-    draw.rectangle(
-        (_s(left), _s(top), _s(left + text_width + 2 * pad_x), _s(bottom)),
+    _draw_chip_background(
+        draw,
+        left=left,
+        top=top,
+        right=left + text_width + 2 * pad_x,
+        bottom=bottom,
         fill=0,
     )
     draw.cap_centered_text(
@@ -1213,6 +1293,564 @@ def _render_ring_gauge(context: RenderContext) -> bytes:
     return output.getvalue()
 
 
+def _v3_reset_text(reset_in: Any) -> str:
+    if isinstance(reset_in, str) and reset_in.strip():
+        return reset_in.strip().lower()
+    return "N/A"
+
+
+def _v3_cap_height(
+    draw: _Canvas,
+    text: str,
+    size: int,
+    weight: str,
+) -> float:
+    scaled_size = max(1, round(size * _LAYOUT_SCALE))
+    box = draw.draw.textbbox(
+        (0, 0),
+        text,
+        font=_font(scaled_size, weight=weight),
+        anchor="ls",
+    )
+    return (box[3] - box[1]) / _LAYOUT_SCALE
+
+
+def _draw_v3_number_with_unit(
+    draw: _Canvas,
+    *,
+    x: float,
+    baseline: float,
+    number_text: str,
+    number_size: int,
+    unit_text: str = "%",
+    unit_size: int = 20,
+    weight: str = "black",
+) -> None:
+    """Draw a dominant number with a smaller unit aligned to its cap top."""
+
+    draw.text(
+        (x, baseline),
+        number_text,
+        size=number_size,
+        weight=weight,
+        anchor="ls",
+    )
+    number_width = draw.text_width(number_text, number_size, weight)
+    number_cap = _v3_cap_height(draw, number_text, number_size, weight)
+    unit_cap = _v3_cap_height(draw, unit_text, unit_size, weight)
+    draw.text(
+        (x + number_width + 4, baseline - (number_cap - unit_cap)),
+        unit_text,
+        size=unit_size,
+        weight=weight,
+        anchor="ls",
+    )
+
+
+def _draw_v3_header(
+    draw: _Canvas,
+    current: datetime,
+    slogan: str,
+) -> None:
+    _fit_text(
+        draw,
+        (14, _V3_HEADER_MIDDLE),
+        slogan,
+        max_width=282,
+        size=11,
+        minimum_size=10,
+        weight="slogan",
+        anchor="lm",
+    )
+    timestamp = (
+        f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
+        f"{current.hour:02d}:{current.minute:02d}"
+    )
+    _draw_text(
+        draw,
+        (386, _V3_HEADER_MIDDLE),
+        timestamp,
+        size=9,
+        weight="mono",
+        anchor="rm",
+    )
+    draw.line(
+        (
+            _s(14),
+            _s(_V3_HEADER_RULE_Y),
+            _s(386),
+            _s(_V3_HEADER_RULE_Y),
+        ),
+        fill=0,
+        width=_s(1),
+    )
+
+
+def _v3_cap_middle(
+    draw: _Canvas,
+    text: str,
+    *,
+    top: float,
+    size: int,
+    weight: str,
+) -> float:
+    """Vertical center of visible glyphs drawn with the default top anchor."""
+
+    scaled_size = max(1, round(size * _LAYOUT_SCALE))
+    box = draw.draw.textbbox(
+        (0, 0),
+        text,
+        font=_font(scaled_size, weight=weight),
+        anchor="la",
+    )
+    return top + (box[1] + box[3]) / 2 / _LAYOUT_SCALE
+
+
+def _load_v3_logo(
+    path: Path,
+    *,
+    silhouette: bool = False,
+) -> Image.Image | None:
+    """Load a provider logo as an opaque white-background grayscale image."""
+
+    try:
+        logo = Image.open(path).convert("RGBA")
+    except OSError:
+        return None
+    bbox = logo.getchannel("A").getbbox()
+    if bbox:
+        logo = logo.crop(bbox)
+    background = Image.new("RGBA", logo.size, (255, 255, 255, 255))
+    if silhouette:
+        ink = Image.new("RGBA", logo.size, (0, 0, 0, 255))
+        logo = Image.composite(ink, background, logo.getchannel("A"))
+    else:
+        logo = Image.alpha_composite(background, logo)
+    return logo.convert("L")
+
+
+def _paste_v3_logo(
+    draw: _Canvas,
+    logo: Image.Image | None,
+    *,
+    x: float,
+    middle: float,
+    size: float,
+) -> None:
+    """Paste a grayscale logo, vertically centered on ``middle``."""
+
+    if logo is None:
+        return
+    target = max(1, round(size * _LAYOUT_SCALE * _RENDER_SCALE))
+    width, height = logo.size
+    scaled = logo.resize(
+        (target, max(1, round(target * height / width))),
+        Image.Resampling.LANCZOS,
+    )
+    visible_height = size * height / width
+    draw.image.paste(scaled, (_s(x), _s(middle - visible_height / 2)))
+
+
+def _draw_v3_credit(
+    draw: _Canvas,
+    *,
+    deepseek_logo: Image.Image | None,
+    kimi_logo: Image.Image | None,
+) -> None:
+    """Draw an Android-style provider lockup in the 5 HOUR column gap."""
+
+    if deepseek_logo is None and kimi_logo is None:
+        return
+    caption = "Powered by"
+    caption_size = _V3_CREDIT_TEXT_SIZE
+    logo_size = _V3_CREDIT_LOGO_SIZE
+    middle = _V3_CREDIT_MIDDLE
+    logo_items: list[tuple[Image.Image, float]] = []
+    if kimi_logo is not None:
+        logo_items.append((kimi_logo, logo_size))
+    if deepseek_logo is not None:
+        logo_items.append((deepseek_logo, logo_size + 2))
+
+    caption_width = draw.text_width(caption, caption_size, "credit")
+    logo_width = sum(size for _, size in logo_items)
+    gap_width = _V3_CREDIT_TEXT_LOGO_GAP + max(
+        0,
+        len(logo_items) - 1,
+    ) * _V3_CREDIT_LOGO_GAP
+    total_width = caption_width + gap_width + logo_width
+    column_left = float(_V3_RIGHT_COLUMN_X)
+    column_right = float(_V2_CONTENT_RIGHT)
+    column_center = (
+        (column_left + column_right) / 2 + _V3_CREDIT_X_BIAS
+    )
+    x = column_center - total_width / 2
+    middle += _V3_CREDIT_Y_BIAS
+    draw.cap_centered_text(
+        (x, middle),
+        caption,
+        size=caption_size,
+        weight="credit",
+        fill=_V3_CREDIT_FILL,
+        anchor="lm",
+    )
+    x += (
+        caption_width
+        + _V3_CREDIT_TEXT_LOGO_GAP
+        + _V3_CREDIT_LOGO_X_BIAS
+    )
+    for index, (logo, size) in enumerate(logo_items):
+        _paste_v3_logo(draw, logo, x=x, middle=middle, size=size)
+        x += size
+        if index < len(logo_items) - 1:
+            x += _V3_CREDIT_LOGO_GAP
+
+
+def _draw_v3_light_chip(
+    draw: _Canvas,
+    *,
+    text: str,
+    left: float,
+    middle: float,
+    size: int = 8,
+    pad_x: int = 5,
+    pad_y: int = 3,
+) -> None:
+    """Draw an inverted black-on-white chip for the dark metrics band."""
+
+    scaled_size = max(1, round(size * _LAYOUT_SCALE))
+    font = _font(scaled_size, weight="mono-regular")
+    cap_box = draw.draw.textbbox((0, 0), text, font=font, anchor="ls")
+    cap_height = (cap_box[3] - cap_box[1]) / _LAYOUT_SCALE
+    text_width = draw.text_width(text, size, "mono-regular")
+    top = middle - cap_height / 2 - pad_y
+    bottom = middle + cap_height / 2 + pad_y
+    _draw_chip_background(
+        draw,
+        left=left,
+        top=top,
+        right=left + text_width + 2 * pad_x,
+        bottom=bottom,
+        fill=255,
+    )
+    draw.cap_centered_text(
+        (left + pad_x, middle),
+        text,
+        size=size,
+        weight="mono-regular",
+        fill=0,
+        anchor="lm",
+    )
+
+
+def _draw_v3_kimi(
+    draw: _Canvas,
+    usage: Mapping[str, Any] | None,
+    *,
+    deepseek_logo: Image.Image | None = None,
+    kimi_logo: Image.Image | None = None,
+) -> None:
+    label = "KIMI · WEEK"
+    _draw_text(
+        draw,
+        (14, _V3_KIMI_LABEL_TOP),
+        label,
+        size=10,
+        weight="semibold",
+    )
+    _draw_text(
+        draw,
+        (_V3_RIGHT_COLUMN_X, _V3_KIMI_LABEL_TOP),
+        "5 HOUR",
+        size=10,
+        weight="semibold",
+    )
+    draw.line(
+        (
+            _s(_V3_DIVIDER_X),
+            _s(_V3_DIVIDER_TOP),
+            _s(_V3_DIVIDER_X),
+            _s(_V3_DIVIDER_BOTTOM),
+        ),
+        fill=0,
+        width=_s(1),
+    )
+
+    if not isinstance(usage, Mapping):
+        _draw_v2_unavailable(
+            draw,
+            center=(_LOGICAL_WIDTH / 2, 120),
+        )
+        return
+
+    # Plan chip anchors the top-right corner of the Kimi block, cap-aligned
+    # with the section labels.
+    plan = usage.get("user_level")
+    plan_text = (
+        str(plan).strip().upper()
+        if isinstance(plan, str) and plan.strip()
+        else "UNKNOWN"
+    )
+    label_middle = _v3_cap_middle(
+        draw,
+        label,
+        top=_V3_KIMI_LABEL_TOP,
+        size=10,
+        weight="semibold",
+    )
+    _draw_v2_chip(
+        draw,
+        text=plan_text,
+        right=386,
+        middle=label_middle,
+        size=8,
+        pad_x=5,
+        pad_y=3,
+    )
+
+    week_percent = _number(_nested(usage, "week", "used_percent"))
+    if week_percent is None:
+        _draw_text(
+            draw,
+            (14, 118),
+            "N/A",
+            size=30,
+            weight="black",
+        )
+    else:
+        _draw_v3_number_with_unit(
+            draw,
+            x=10,
+            baseline=_V3_KIMI_NUMBER_BASELINE,
+            number_text=_whole_number(week_percent),
+            number_size=115,
+            unit_size=22,
+        )
+
+    draw.rectangle(
+        (
+            _s(_V3_KIMI_BAR_LEFT),
+            _s(_V3_KIMI_BAR_TOP),
+            _s(_V3_KIMI_BAR_RIGHT),
+            _s(_V3_KIMI_BAR_BOTTOM),
+        ),
+        outline=0,
+        width=_s(1),
+    )
+    if week_percent is not None:
+        bounded = max(Decimal("0"), min(Decimal("100"), week_percent))
+        fill_width = round(
+            float(bounded / Decimal("100"))
+            * (_V3_KIMI_BAR_RIGHT - _V3_KIMI_BAR_LEFT)
+        )
+        if fill_width > 0:
+            draw.rectangle(
+                (
+                    _s(_V3_KIMI_BAR_LEFT),
+                    _s(_V3_KIMI_BAR_TOP),
+                    _s(_V3_KIMI_BAR_LEFT + fill_width),
+                    _s(_V3_KIMI_BAR_BOTTOM),
+                ),
+                fill=0,
+            )
+    _draw_text(
+        draw,
+        (14, _V3_KIMI_CAPTION_TOP),
+        "USED · RESET "
+        f"{_v3_reset_text(_nested(usage, 'week', 'reset_in'))}",
+        size=9,
+        weight="mono",
+    )
+
+    five_hour_percent = _number(_nested(usage, "5h", "used_percent"))
+    if five_hour_percent is None:
+        _draw_text(
+            draw,
+            (_V3_RIGHT_COLUMN_X, 77),
+            "N/A",
+            size=24,
+            weight="mono",
+        )
+    else:
+        _draw_v3_number_with_unit(
+            draw,
+            x=_V3_RIGHT_COLUMN_X,
+            baseline=100,
+            number_text=_whole_number(five_hour_percent),
+            number_size=30,
+            unit_size=12,
+            weight="mono",
+        )
+    _draw_text(
+        draw,
+        (_V3_RIGHT_COLUMN_X, 112),
+        "RESET "
+        f"{_v3_reset_text(_nested(usage, '5h', 'reset_in'))}",
+        size=9,
+        weight="mono",
+    )
+    _draw_v3_credit(
+        draw,
+        deepseek_logo=deepseek_logo,
+        kimi_logo=kimi_logo,
+    )
+
+
+def _draw_v3_deepseek_metric(
+    draw: _Canvas,
+    *,
+    left: int,
+    label: str,
+    value: str,
+    detail: str,
+) -> None:
+    _draw_text(
+        draw,
+        (left, _V3_DEEPSEEK_LABEL_TOP),
+        label,
+        size=9,
+        weight="mono",
+        fill=255,
+    )
+    _fit_text(
+        draw,
+        (left, _V3_DEEPSEEK_VALUE_TOP),
+        value,
+        max_width=118,
+        size=20,
+        minimum_size=14,
+        weight="mono",
+        fill=255,
+    )
+    _draw_text(
+        draw,
+        (left, _V3_DEEPSEEK_DETAIL_TOP),
+        detail,
+        size=8,
+        weight="mono",
+        fill=255,
+    )
+
+
+def _draw_v3_deepseek(
+    draw: _Canvas,
+    usage: Mapping[str, Any] | None,
+) -> None:
+    draw.rectangle(
+        (
+            0,
+            _s(_V3_DEEPSEEK_BAND_TOP),
+            _s(_LOGICAL_WIDTH),
+            _s(_LOGICAL_HEIGHT),
+        ),
+        fill=0,
+    )
+    _draw_text(
+        draw,
+        (14, _V3_DEEPSEEK_TITLE_TOP),
+        "DEEPSEEK",
+        size=11,
+        weight="mono",
+        fill=255,
+    )
+    title_middle = _v3_cap_middle(
+        draw,
+        "DEEPSEEK",
+        top=_V3_DEEPSEEK_TITLE_TOP,
+        size=11,
+        weight="mono",
+    )
+    _draw_v3_light_chip(
+        draw,
+        text="API",
+        left=14 + draw.text_width("DEEPSEEK", 11, "mono") + 6,
+        middle=title_middle,
+    )
+    _draw_text(
+        draw,
+        (386, _V3_DEEPSEEK_TITLE_TOP + 2),
+        "TOKENS / SPEND",
+        size=8,
+        weight="mono",
+        fill=255,
+        anchor="ra",
+    )
+
+    if not isinstance(usage, Mapping):
+        _draw_text(
+            draw,
+            (_LOGICAL_WIDTH / 2, 258),
+            "UNAVAILABLE",
+            size=13,
+            weight="black",
+            fill=255,
+            anchor="mm",
+        )
+        return
+
+    _draw_v3_deepseek_metric(
+        draw,
+        left=14,
+        label="THIS MONTH",
+        value=(
+            str(_nested(usage, "month", "tokens")).upper()
+            if _nested(usage, "month", "tokens") is not None
+            else "N/A"
+        ),
+        detail=f"CNY {_one_decimal(_nested(usage, 'month', 'cost_cny'))}",
+    )
+    _draw_v3_deepseek_metric(
+        draw,
+        left=151,
+        label="TODAY",
+        value=(
+            str(_nested(usage, "today", "tokens")).upper()
+            if _nested(usage, "today", "tokens") is not None
+            else "N/A"
+        ),
+        detail=f"CNY {_one_decimal(_nested(usage, 'today', 'cost_cny'))}",
+    )
+    _draw_v3_deepseek_metric(
+        draw,
+        left=287,
+        label="CACHE HIT",
+        value=_one_decimal(
+            _nested(usage, "3d", "cache_hit_percent"),
+            "%",
+        ),
+        detail="LAST 3 DAYS",
+    )
+    for divider_x in (137, 273):
+        draw.line(
+            (
+                _s(divider_x),
+                _s(_V3_DEEPSEEK_SEPARATOR_TOP),
+                _s(divider_x),
+                _s(_V3_DEEPSEEK_SEPARATOR_BOTTOM),
+            ),
+            fill=255,
+            width=_s(1),
+        )
+
+
+def _render_big(context: RenderContext) -> bytes:
+    """Render version 3 with one dominant quota and a black metrics band."""
+
+    draw = _Canvas(context.width, context.height)
+    _draw_v3_header(draw, context.updated_at, context.slogan)
+    _draw_v3_kimi(
+        draw,
+        context.kimi,
+        deepseek_logo=_load_v3_logo(_V3_DEEPSEEK_LOGO_FILE, silhouette=True),
+        kimi_logo=_load_v3_logo(_V3_KIMI_LOGO_FILE),
+    )
+    _draw_v3_deepseek(draw, context.deepseek)
+
+    flattened = draw.finalize()
+    output = io.BytesIO()
+    flattened.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
 def _render_daily_grid(context: RenderContext) -> bytes:
     """Render the current black-and-white grid design."""
 
@@ -1271,6 +1909,12 @@ register_design(
     "ring-gauge",
     _render_ring_gauge,
     description="Version 2 ring gauges with a black section banner",
+)
+register_design(
+    "big",
+    _render_big,
+    description="Version 3 dominant weekly quota with a black metrics band",
+    auto_rotate=False,
 )
 
 
