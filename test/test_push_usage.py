@@ -8,7 +8,7 @@ from PIL import Image
 
 import push_usage
 import usage_image
-from test_usage_image import DEEPSEEK_USAGE, KIMI_USAGE
+from test.test_usage_image import DEEPSEEK_USAGE, KIMI_USAGE
 
 
 class _FakeResponse:

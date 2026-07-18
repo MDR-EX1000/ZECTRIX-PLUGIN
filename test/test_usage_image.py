@@ -42,8 +42,28 @@ class UsageImageTests(unittest.TestCase):
     def test_lists_the_registered_default_design(self):
         self.assertEqual(
             [design.name for design in usage_image.list_designs()],
-            ["daily-grid"],
+            ["daily-grid", "ring-gauge"],
         )
+
+    def test_ring_gauge_design_renders_800x600(self):
+        png = usage_image.render_usage_image(
+            KIMI_USAGE,
+            DEEPSEEK_USAGE,
+            updated_at=datetime(
+                2026,
+                7,
+                17,
+                14,
+                30,
+                tzinfo=timezone.utc,
+            ),
+            design="ring-gauge",
+        )
+
+        with Image.open(io.BytesIO(png)) as image:
+            self.assertEqual(image.size, (800, 600))
+            self.assertEqual(image.mode, "L")
+            self.assertEqual(image.getpixel((0, 320)), 0)
 
     def test_rejects_unknown_and_duplicate_designs(self):
         current = datetime(2026, 7, 18, tzinfo=timezone.utc)
@@ -134,29 +154,26 @@ class UsageImageTests(unittest.TestCase):
             "最后再改亿点点",
         )
 
-    def test_design_scheduler_covers_all_pairs_for_two_designs(self):
+    def test_design_scheduler_rotates_two_designs_daily(self):
         designs = (
             usage_image._FunctionDesign("alpha", "", lambda context: b""),
             usage_image._FunctionDesign("beta", "", lambda context: b""),
         )
         start = datetime(2026, 7, 18, tzinfo=timezone.utc)
-        pairs = {
-            (
-                usage_image.daily_slogan(
-                    start + timedelta(days=offset)
-                ),
-                usage_image.resolve_design_name(
-                    "rotate",
-                    start + timedelta(days=offset),
-                    designs=designs,
-                ),
+        names = [
+            usage_image.resolve_design_name(
+                "rotate",
+                start + timedelta(days=offset),
+                designs=designs,
             )
             for offset in range(28)
-        }
+        ]
 
-        self.assertEqual(len(pairs), 28)
+        self.assertTrue(
+            all(names[index] != names[index - 1] for index in range(1, 28))
+        )
 
-    def test_design_scheduler_covers_all_pairs_for_three_designs(self):
+    def test_design_scheduler_cycles_registered_designs_daily(self):
         designs = tuple(
             usage_image._FunctionDesign(
                 name,
@@ -166,21 +183,17 @@ class UsageImageTests(unittest.TestCase):
             for name in ("alpha", "beta", "gamma")
         )
         start = datetime(2026, 7, 18, tzinfo=timezone.utc)
-        pairs = {
-            (
-                usage_image.daily_slogan(
-                    start + timedelta(days=offset)
-                ),
-                usage_image.resolve_design_name(
-                    "rotate",
-                    start + timedelta(days=offset),
-                    designs=designs,
-                ),
+        names = [
+            usage_image.resolve_design_name(
+                "rotate",
+                start + timedelta(days=offset),
+                designs=designs,
             )
             for offset in range(42)
-        }
+        ]
 
-        self.assertEqual(len(pairs), 42)
+        self.assertEqual(names[3:6], names[:3])
+        self.assertEqual(set(names[:3]), {"alpha", "beta", "gamma"})
 
     def test_design_scheduler_does_not_change_language_alternation(self):
         start = datetime(2026, 7, 18, tzinfo=timezone.utc)
@@ -235,6 +248,7 @@ class UsageImageTests(unittest.TestCase):
                 17,
                 tzinfo=timezone.utc,
             ),
+            design="daily-grid",
         )
 
         with Image.open(io.BytesIO(png)) as image:

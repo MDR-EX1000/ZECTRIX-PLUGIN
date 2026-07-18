@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -37,10 +38,16 @@ _SECTION_DIVIDER_Y = 158
 _DEEPSEEK_TOP = 178
 _DEEPSEEK_METRIC_TOP = 202
 _DEEPSEEK_DETAIL_OFFSET = 61
-_DEEPSEEK_LINE_BOTTOM = 278
+_DEEPSEEK_SEPARATOR_TOP = 222
+_DEEPSEEK_SEPARATOR_BOTTOM = 257
 _DEEPSEEK_VALUE_SIZE = 20
 _DEEPSEEK_VALUE_MINIMUM_SIZE = 14
 _RENDER_SCALE = 4
+_V2_MARGIN = 14
+_V2_CONTENT_RIGHT = _LOGICAL_WIDTH - _V2_MARGIN
+_V2_GAUGE_CENTER_Y = 94
+_V2_GAUGE_RADIUS = 48
+_V2_GAUGE_ARC_WIDTH = 9
 _ONE_DECIMAL = Decimal("0.1")
 _WHOLE_NUMBER = Decimal("1")
 _DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
@@ -191,19 +198,17 @@ def _design_day_number(moment: datetime) -> int:
 
 
 def design_index_for_day(moment: datetime, design_count: int) -> int:
-    """Return the phase-shifted design index for a UTC+8 calendar day.
+    """Return the design index for a UTC+8 calendar day.
 
-    The slogan cycle has 14 slots. Shifting the design phase once per slogan
-    cycle visits every slogan/design pair for any number of registered
-    designs, including cases where the design count shares a factor with 14.
+    Designs advance one slot per local calendar day. This keeps automatic
+    rotation predictable: with two designs, consecutive days alternate
+    between them, independent of how often the image is generated.
     """
 
     if design_count <= 0:
         raise ValueError("design_count must be greater than zero")
     day_number = _design_day_number(moment)
-    slogan_slot = day_number % len(DAILY_SLOGANS)
-    slogan_cycle = day_number // len(DAILY_SLOGANS)
-    return (slogan_slot + slogan_cycle) % design_count
+    return (day_number + 1) % design_count
 
 
 def resolve_design_name(
@@ -422,6 +427,34 @@ class _Canvas:
 
     def text_width(self, text: str, size: int, weight: str) -> float:
         return self.draw.textlength(text, font=_font(size, weight=weight))
+
+    def cap_centered_text(
+        self,
+        position: tuple[float, float],
+        text: str,
+        *,
+        size: int,
+        weight: str = "regular",
+        fill: int = 0,
+        anchor: str = "lm",
+    ) -> None:
+        """Center text on the visible glyph cap-height rather than font metrics."""
+
+        scaled_size = max(1, round(size * _LAYOUT_SCALE))
+        font = _font(scaled_size, weight=weight)
+        box = self.draw.textbbox((0, 0), text, font=font, anchor="ls")
+        cap_center_scaled = (box[1] + box[3]) / 2
+        baseline_y = position[1] * _LAYOUT_SCALE - cap_center_scaled
+        self._text_ops.append(
+            (
+                (round(position[0] * _LAYOUT_SCALE), round(baseline_y)),
+                text,
+                scaled_size,
+                weight,
+                fill,
+                f"{anchor[0]}s",
+            )
+        )
 
     def line(self, *args: Any, **kwargs: Any) -> None:
         self.draw.line(*args, **kwargs)
@@ -757,9 +790,9 @@ def _draw_deepseek(
     draw.line(
         (
             _s(137),
-            _s(_DEEPSEEK_METRIC_TOP),
+            _s(_DEEPSEEK_SEPARATOR_TOP),
             _s(137),
-            _s(_DEEPSEEK_LINE_BOTTOM),
+            _s(_DEEPSEEK_SEPARATOR_BOTTOM),
         ),
         fill=0,
         width=_s(1),
@@ -782,9 +815,9 @@ def _draw_deepseek(
     draw.line(
         (
             _s(273),
-            _s(_DEEPSEEK_METRIC_TOP),
+            _s(_DEEPSEEK_SEPARATOR_TOP),
             _s(273),
-            _s(_DEEPSEEK_LINE_BOTTOM),
+            _s(_DEEPSEEK_SEPARATOR_BOTTOM),
         ),
         fill=0,
         width=_s(1),
@@ -801,6 +834,383 @@ def _draw_deepseek(
         ),
         detail="LAST 3 DAYS",
     )
+
+
+def _draw_v2_chip(
+    draw: _Canvas,
+    *,
+    text: str,
+    middle: float,
+    left: float | None = None,
+    right: float | None = None,
+    size: int = 9,
+    pad_x: int = 6,
+    pad_y: int = 3,
+) -> None:
+    """Draw a cap-height-aligned white-on-black metadata chip."""
+
+    if (left is None) == (right is None):
+        raise ValueError("pass exactly one of left or right")
+    scaled_size = max(1, round(size * _LAYOUT_SCALE))
+    font = _font(scaled_size, weight="mono-regular")
+    cap_box = draw.draw.textbbox((0, 0), text, font=font, anchor="ls")
+    cap_height = (cap_box[3] - cap_box[1]) / _LAYOUT_SCALE
+    text_width = draw.text_width(text, size, "mono-regular")
+    if left is None:
+        left = right - text_width - 2 * pad_x
+    top = middle - cap_height / 2 - pad_y
+    bottom = middle + cap_height / 2 + pad_y
+    draw.rectangle(
+        (_s(left), _s(top), _s(left + text_width + 2 * pad_x), _s(bottom)),
+        fill=0,
+    )
+    draw.cap_centered_text(
+        (left + pad_x, middle),
+        text,
+        size=size,
+        weight="mono-regular",
+        fill=255,
+        anchor="lm",
+    )
+
+
+def _draw_v2_unavailable(
+    draw: _Canvas,
+    *,
+    center: tuple[float, float],
+) -> None:
+    text = "UNAVAILABLE"
+    size = 11
+    pad_x, pad_y = 12, 7
+    text_width = draw.text_width(text, size, "black")
+    half_width = text_width / 2 + pad_x
+    half_height = size / 2 + pad_y
+    draw.rectangle(
+        (
+            _s(center[0] - half_width),
+            _s(center[1] - half_height),
+            _s(center[0] + half_width),
+            _s(center[1] + half_height),
+        ),
+        outline=0,
+        width=_s(1),
+    )
+    draw.text(
+        center,
+        text,
+        size=size,
+        weight="black",
+        anchor="mm",
+    )
+
+
+def _draw_v2_gauge(
+    draw: _Canvas,
+    *,
+    center_x: float,
+    label: str,
+    percent: Any,
+    reset_in: Any,
+) -> None:
+    """Draw a ring gauge for the second visual design."""
+
+    center_y = _V2_GAUGE_CENTER_Y
+    radius = _V2_GAUGE_RADIUS
+    box = (
+        _s(center_x - radius),
+        _s(center_y - radius),
+        _s(center_x + radius),
+        _s(center_y + radius),
+    )
+    draw.draw.ellipse(box, outline=0, width=_s(2))
+
+    value = _number(percent)
+    if value is None:
+        draw.cap_centered_text(
+            (center_x, center_y - 12),
+            "N/A",
+            size=14,
+            weight="mono",
+            anchor="mm",
+        )
+    else:
+        bounded = max(Decimal("0"), min(Decimal("100"), value))
+        if bounded > 0:
+            draw.draw.arc(
+                box,
+                -90,
+                -90 + float(bounded) * 3.6,
+                fill=0,
+                width=_s(_V2_GAUGE_ARC_WIDTH),
+            )
+        number_text = f"{float(bounded):.0f}"
+        number_width = draw.text_width(number_text, 24, "mono")
+        unit_width = draw.text_width("%", 11, "mono")
+        start_x = center_x - (number_width + 2 + unit_width) / 2
+        draw.cap_centered_text(
+            (start_x, center_y - 12),
+            number_text,
+            size=24,
+            weight="mono",
+            anchor="lm",
+        )
+        draw.cap_centered_text(
+            (start_x + number_width + 2, center_y - 16),
+            "%",
+            size=11,
+            weight="mono",
+            anchor="lm",
+        )
+
+    draw.cap_centered_text(
+        (center_x, center_y + 9),
+        label,
+        size=9,
+        weight="semibold",
+        anchor="mm",
+    )
+    reset_text = (
+        str(reset_in).strip().lower()
+        if isinstance(reset_in, str) and reset_in.strip()
+        else "N/A"
+    )
+    reset_text = re.sub(r"^(\d+d\d+h).*$", r"\1", reset_text)
+    draw.cap_centered_text(
+        (center_x, center_y + 22),
+        f"RESET {reset_text}",
+        size=8,
+        weight="mono",
+        anchor="mm",
+    )
+
+
+def _draw_v2_header(
+    draw: _Canvas,
+    kimi_usage: Mapping[str, Any] | None,
+) -> None:
+    row_middle = 20
+    x = float(_V2_MARGIN)
+    draw.cap_centered_text(
+        (x, row_middle),
+        "KIMI",
+        size=13,
+        weight="black",
+        anchor="lm",
+    )
+    x += draw.text_width("KIMI", 13, "black") + 8
+    if isinstance(kimi_usage, Mapping):
+        plan = kimi_usage.get("user_level")
+        plan_text = (
+            str(plan).strip().upper()
+            if isinstance(plan, str) and plan.strip()
+            else "UNKNOWN"
+        )
+        _draw_v2_chip(
+            draw,
+            left=x,
+            middle=row_middle,
+            text=plan_text,
+        )
+
+    draw.cap_centered_text(
+        (_V2_CONTENT_RIGHT, row_middle),
+        "RATE LIMIT",
+        size=9,
+        weight="semibold",
+        anchor="rm",
+    )
+    draw.line(
+        (_s(_V2_MARGIN), _s(34), _s(_V2_CONTENT_RIGHT), _s(34)),
+        fill=0,
+        width=_s(1),
+    )
+
+
+def _draw_v2_kimi(
+    draw: _Canvas,
+    usage: Mapping[str, Any] | None,
+) -> None:
+    if not isinstance(usage, Mapping):
+        _draw_v2_unavailable(
+            draw,
+            center=(_LOGICAL_WIDTH / 2, _V2_GAUGE_CENTER_Y),
+        )
+        return
+
+    _draw_v2_gauge(
+        draw,
+        center_x=105,
+        label="5 HOUR",
+        percent=_nested(usage, "5h", "used_percent"),
+        reset_in=_nested(usage, "5h", "reset_in"),
+    )
+    _draw_v2_gauge(
+        draw,
+        center_x=295,
+        label="WEEK",
+        percent=_nested(usage, "week", "used_percent"),
+        reset_in=_nested(usage, "week", "reset_in"),
+    )
+
+
+def _draw_v2_deepseek_metric(
+    draw: _Canvas,
+    *,
+    left: int,
+    label: str,
+    value: str,
+    detail: str,
+) -> None:
+    draw.cap_centered_text(
+        (left, 228),
+        label,
+        size=10,
+        weight="semibold",
+        anchor="lm",
+    )
+    draw.cap_centered_text(
+        (left, 250),
+        value,
+        size=18,
+        weight="mono",
+        anchor="lm",
+    )
+    draw.cap_centered_text(
+        (left, 277),
+        detail,
+        size=10,
+        weight="mono",
+        anchor="lm",
+    )
+
+
+def _draw_v2_banner(
+    draw: _Canvas,
+    current: datetime,
+    slogan: str,
+) -> None:
+    top, bottom = 156, 180
+    middle = (top + bottom) / 2
+    draw.rectangle(
+        (0, _s(top), _s(_LOGICAL_WIDTH), _s(bottom)),
+        fill=0,
+    )
+    timestamp = (
+        f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
+        f"{current.hour:02d}:{current.minute:02d}"
+    )
+    _draw_text(
+        draw,
+        (_V2_MARGIN, middle),
+        timestamp,
+        size=9,
+        weight="mono",
+        fill=255,
+        anchor="lm",
+    )
+    _fit_text(
+        draw,
+        (_V2_CONTENT_RIGHT, middle),
+        slogan,
+        max_width=240,
+        size=9,
+        minimum_size=7,
+        weight="slogan",
+        fill=255,
+        anchor="rm",
+    )
+
+
+def _draw_v2_deepseek(
+    draw: _Canvas,
+    usage: Mapping[str, Any] | None,
+) -> None:
+    title_middle = 198
+    x = float(_V2_MARGIN)
+    draw.cap_centered_text(
+        (x, title_middle),
+        "DEEPSEEK",
+        size=11,
+        weight="black",
+        anchor="lm",
+    )
+    x += draw.text_width("DEEPSEEK", 11, "black") + 6
+    _draw_v2_chip(
+        draw,
+        left=x,
+        middle=title_middle,
+        text="API",
+    )
+    draw.cap_centered_text(
+        (_V2_CONTENT_RIGHT, title_middle),
+        "TOKENS / SPEND",
+        size=9,
+        weight="semibold",
+        anchor="rm",
+    )
+    draw.line(
+        (_s(_V2_MARGIN), _s(214), _s(_V2_CONTENT_RIGHT), _s(214)),
+        fill=0,
+        width=_s(1),
+    )
+
+    if not isinstance(usage, Mapping):
+        _draw_v2_unavailable(draw, center=(_LOGICAL_WIDTH / 2, 254))
+        return
+
+    _draw_v2_deepseek_metric(
+        draw,
+        left=14,
+        label="THIS MONTH",
+        value=(
+            str(_nested(usage, "month", "tokens")).upper()
+            if _nested(usage, "month", "tokens") is not None
+            else "N/A"
+        ),
+        detail=f"CNY {_one_decimal(_nested(usage, 'month', 'cost_cny'))}",
+    )
+    _draw_v2_deepseek_metric(
+        draw,
+        left=143,
+        label="TODAY",
+        value=(
+            str(_nested(usage, "today", "tokens")).upper()
+            if _nested(usage, "today", "tokens") is not None
+            else "N/A"
+        ),
+        detail=f"CNY {_one_decimal(_nested(usage, 'today', 'cost_cny'))}",
+    )
+    _draw_v2_deepseek_metric(
+        draw,
+        left=271,
+        label="CACHE HIT",
+        value=_one_decimal(
+            _nested(usage, "3d", "cache_hit_percent"),
+            "%",
+        ),
+        detail="LAST 3 DAYS",
+    )
+    for divider_x in (136, 264):
+        draw.line(
+            (_s(divider_x), _s(241), _s(divider_x), _s(259)),
+            fill=0,
+            width=_s(1),
+        )
+
+
+def _render_ring_gauge(context: RenderContext) -> bytes:
+    """Render the worktree's ring-gauge design as version 2."""
+
+    draw = _Canvas(context.width, context.height)
+    _draw_v2_header(draw, context.kimi)
+    _draw_v2_kimi(draw, context.kimi)
+    _draw_v2_banner(draw, context.updated_at, context.slogan)
+    _draw_v2_deepseek(draw, context.deepseek)
+
+    flattened = draw.finalize()
+    output = io.BytesIO()
+    flattened.save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
 def _render_daily_grid(context: RenderContext) -> bytes:
@@ -857,6 +1267,11 @@ register_design(
     _render_daily_grid,
     description="Current banner, Kimi quota, and DeepSeek metrics layout",
 )
+register_design(
+    "ring-gauge",
+    _render_ring_gauge,
+    description="Version 2 ring gauges with a black section banner",
+)
 
 
 def render_usage_image(
@@ -868,9 +1283,8 @@ def render_usage_image(
 ) -> bytes:
     """Return a deterministic 800x600 grayscale PNG.
 
-    ``design='rotate'`` selects a design using the UTC+8 day and the
-    phase-shifted 14-slogan scheduler. Passing a registered name pins the
-    output to that design.
+    ``design='rotate'`` selects a design using the UTC+8 calendar day.
+    Passing a registered name pins the output to that design.
     """
 
     current = updated_at or datetime.now(_DISPLAY_TIMEZONE)
