@@ -163,13 +163,15 @@ big                             -> page 2
 - 对认证类 4xx 不盲目重试；
 - 两个 Provider 都失败时保留上一张有效图片。
 
-硬件每 10 分钟刷新一次时，建议 cron 也每 10 分钟运行：
+硬件每 10 分钟刷新一次时，建议 cron 也每 10 分钟运行。若要同时维持
+page 1 的 V1/V2 日轮换和 page 2 的 V3 固定布局，使用 runner 的
+`--all-pages` 模式；它们在同一把 `flock` 锁内串行执行：
 
 ```cron
-*/10 * * * * /data/CODE/ZECTRIX/run_usage.sh >> /data/CODE/ZECTRIX/zectrix-usage.log 2>&1
+*/10 * * * * /data/CODE/ZECTRIX/run_usage.sh --all-pages >> /data/CODE/ZECTRIX/zectrix-usage.log 2>&1
 ```
 
-生产 runner 默认使用 `rotate`，因此推送到 page 1。需要手动推送 V3
+单独运行时，runner 默认使用 `rotate` 并推送到 page 1；需要单独推送 V3
 到 page 2 时使用：
 
 ```bash

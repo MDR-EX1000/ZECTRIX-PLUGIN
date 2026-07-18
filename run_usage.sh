@@ -14,5 +14,17 @@ fi
 
 mkdir -p "$LOCK_DIR"
 
+if [[ "${1:-}" == "--all-pages" ]]; then
+    shift
+    exec "$FLOCK_BIN" -n "$LOCK_FILE" /bin/bash -c '
+        root_dir="$1"
+        shift
+        /usr/bin/python3 "$root_dir/push_usage.py" \
+            --design rotate "$@"
+        /usr/bin/python3 "$root_dir/push_usage.py" \
+            --design big "$@"
+    ' zectrix-usage-runner "$ROOT_DIR" "$@"
+fi
+
 exec "$FLOCK_BIN" -n "$LOCK_FILE" \
     /usr/bin/python3 "$ROOT_DIR/push_usage.py" "$@"
