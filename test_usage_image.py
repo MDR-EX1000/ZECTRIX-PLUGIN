@@ -78,7 +78,13 @@ class UsageImageTests(unittest.TestCase):
 
     def test_usage_percentages_are_rounded_to_whole_numbers(self):
         self.assertEqual(usage_image._whole_number(67.5, "%"), "68%")
-        self.assertEqual(usage_image._whole_number(98.65, "%"), "99%")
+
+    def test_cache_hit_keeps_one_decimal(self):
+        canvas = usage_image._Canvas()
+        usage_image._draw_deepseek(canvas, DEEPSEEK_USAGE)
+
+        text_values = [operation[1] for operation in canvas._text_ops]
+        self.assertIn("98.7%", text_values)
 
     def test_deepseek_has_api_chip_next_to_title(self):
         canvas = usage_image._Canvas()

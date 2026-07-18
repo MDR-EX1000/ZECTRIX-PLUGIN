@@ -795,7 +795,7 @@ def _draw_deepseek(
         right=386,
         top=_DEEPSEEK_METRIC_TOP,
         label="CACHE HIT",
-        value=_whole_number(
+        value=_one_decimal(
             _nested(usage, "3d", "cache_hit_percent"),
             "%",
         ),
