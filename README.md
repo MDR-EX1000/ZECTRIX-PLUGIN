@@ -4,7 +4,7 @@
 
 ```text
 api_usage.py    获取并规范化 Kimi / DeepSeek 用量
-usage_image.py  生成 400x300 黑白 PNG
+usage_image.py  生成 800x600 灰度 PNG
 push_usage.py   通过 Zectrix Open API 推送图片
 ```
 
@@ -34,8 +34,30 @@ DeepSeek Dashboard Token 继续使用：
 python3 usage_image.py
 ```
 
-默认生成当前目录的 `./api_usage.png`，后续每次运行直接覆盖该文件。也可以
+默认生成当前目录的 `./api_usage.png`，后续每次运行直接覆盖该文件。输出为
+800x600；版式使用 400x300 逻辑坐标，因此文字和图形比例保持不变。也可以
 使用 `--output` 指定其他位置。
+
+Banner 左侧使用按东八区日期轮换的 AI Coding Slogan。同一天重复生成时
+保持不变，英文和中文严格隔天交替；右侧显示东八区更新时间。
+项目内置精简的 Noto Sans SC 字体子集。设置 `SLOGAN_FONT_FILE` 可以使用
+本机其他中文字体；本地存在 `assets/fonts/msyhbd.ttc` 或 `msyh.ttc` 时会
+优先使用微软雅黑。
+
+图片设计支持注册多个实现。默认的 `rotate` 会按东八区自然日自动选择设计：
+Slogan 仍然保持 14 天循环，设计选择使用相位偏移，因此有 N 个设计时会在
+`14 × N` 天内遍历所有 Slogan/设计组合。当前内置设计为 `daily-grid`。
+
+```bash
+# 查看可用设计
+python3 usage_image.py --list-designs
+
+# 固定使用当前设计
+python3 usage_image.py --design daily-grid
+
+# 或通过环境变量固定设计
+USAGE_IMAGE_DESIGN=daily-grid python3 usage_image.py
+```
 
 单个 Provider 暂时不可用时，图片仍会生成，失败区域显示
 `UNAVAILABLE`。两个 Provider 都不可用时命令退出，不生成新图片。
@@ -81,6 +103,9 @@ python3 push_usage.py --list-devices
 # 实时采集、生成并推送到 page 1
 python3 push_usage.py
 
+# 自动轮换设计并推送
+python3 push_usage.py --design rotate
+
 # 推送已有图片
 python3 push_usage.py --image ./api_usage.png
 
@@ -89,8 +114,13 @@ python3 push_usage.py --dry-run
 ```
 
 自动生成模式每次都会先覆盖当前目录的 `./api_usage.png`，再执行推送。
-生成的图片已经是 1-bit 黑白 PNG，因此默认关闭服务端抖动。只有需要推送
-包含灰阶的其他图片时才使用 `--dither`。
+生成器输出 8-bit 灰度 PNG，保留文字和图形边缘的灰度信息；推送时默认开启
+Zectrix 服务端抖动，由设备链路负责转换为适合 E-Ink 的黑白点阵。
+需要对比硬阈值效果时使用：
+
+```bash
+python3 push_usage.py --no-dither
+```
 
 ## 定时执行
 

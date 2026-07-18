@@ -294,10 +294,10 @@ def push_image(
     *,
     api_base_url: str = ZECTRIX_API_BASE_URL,
     page_id: str = "1",
-    dither: bool = False,
+    dither: bool = True,
     timeout: float = 15.0,
 ) -> dict[str, Any]:
-    """Push one 400x300 PNG to the Zectrix image endpoint."""
+    """Push one 800x600 PNG to the Zectrix image endpoint."""
 
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
@@ -344,12 +344,12 @@ def push_image(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Push the 400x300 API usage dashboard to Zectrix.",
+        description="Push the 800x600 API usage dashboard to Zectrix.",
     )
     parser.add_argument(
         "--image",
         type=Path,
-        help="Push an existing 400x300 PNG instead of generating one",
+        help="Push an existing 800x600 PNG instead of generating one",
     )
     parser.add_argument(
         "--output",
@@ -374,6 +374,14 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("both", "kimi", "deepseek"),
         default="both",
         help="Usage provider to query when generating (default: both)",
+    )
+    parser.add_argument(
+        "--design",
+        default=os.getenv("USAGE_IMAGE_DESIGN", "rotate"),
+        help=(
+            "Visual design name, or rotate for automatic daily rotation "
+            "(default: rotate)"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -415,10 +423,19 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("1", "2", "3", "4", "5"),
         help="Persistent page number (default: 1)",
     )
-    parser.add_argument(
+    dither_group = parser.add_mutually_exclusive_group()
+    dither_group.add_argument(
         "--dither",
+        dest="dither",
         action="store_true",
-        help="Enable server-side dithering (off by default for 1-bit PNG)",
+        default=True,
+        help="Enable server-side dithering (default)",
+    )
+    dither_group.add_argument(
+        "--no-dither",
+        dest="dither",
+        action="store_false",
+        help="Disable dithering and use server-side hard thresholding",
     )
     parser.add_argument(
         "--kimi-api-key-file",
@@ -464,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.provider,
                 timeout=args.timeout,
                 kimi_api_key_file=args.kimi_api_key_file,
+                design=args.design,
             )
             output_path = args.output or Path("api_usage.png")
 

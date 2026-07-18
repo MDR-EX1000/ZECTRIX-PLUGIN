@@ -1,4 +1,4 @@
-"""Render Kimi and DeepSeek usage as a 400x300 monochrome dashboard."""
+"""Render Kimi and DeepSeek usage as an 800x600 grayscale dashboard."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import io
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -22,11 +22,30 @@ from api_usage import (
 )
 
 
-IMAGE_WIDTH = 400
-IMAGE_HEIGHT = 300
+# The layout remains authored on a 400x300 logical grid and is exported at
+# twice that size for the adopted 800x600 device image.
+IMAGE_WIDTH = 800
+IMAGE_HEIGHT = 600
+_LAYOUT_SCALE = 2
+_LOGICAL_WIDTH = IMAGE_WIDTH // _LAYOUT_SCALE
+_LOGICAL_HEIGHT = IMAGE_HEIGHT // _LAYOUT_SCALE
+_BANNER_HEIGHT = 32
+_SLOGAN_SIZE = 11
+_SLOGAN_MINIMUM_SIZE = 10
+_KIMI_PROGRESS_TOP = 78
+_SECTION_DIVIDER_Y = 158
+_DEEPSEEK_TOP = 178
+_DEEPSEEK_METRIC_TOP = 202
+_DEEPSEEK_DETAIL_OFFSET = 65
+_DEEPSEEK_LINE_BOTTOM = 282
+_DEEPSEEK_VALUE_SIZE = 20
+_DEEPSEEK_VALUE_MINIMUM_SIZE = 14
 _RENDER_SCALE = 4
 _ONE_DECIMAL = Decimal("0.1")
+_WHOLE_NUMBER = Decimal("1")
+_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
 KIMI_API_KEY_FILE = "~/.config/zectrix/kimi_api_key"
+_FONT_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
 _MONTH_NAMES = (
     "JAN",
     "FEB",
@@ -40,6 +59,29 @@ _MONTH_NAMES = (
     "OCT",
     "NOV",
     "DEC",
+)
+ENGLISH_SLOGANS = (
+    "IT WORKS ON MY MACHINE",
+    "LGTM. SHIP IT.",
+    "PROMPT GOES BRRR",
+    "NO TESTS, ONLY VIBES",
+    "ONE MORE PROMPT",
+    "404: SLEEP NOT FOUND",
+    "MAY THE CODE BE WITH YOU",
+)
+CHINESE_SLOGANS = (
+    "上下文已加载",
+    "人类负责想，AI 负责敲",
+    "先跑起来再说",
+    "再重构最后一次",
+    "这次一定不改需求",
+    "缓存命中，心情稳定",
+    "最后再改亿点点",
+)
+DAILY_SLOGANS = tuple(
+    slogan
+    for pair in zip(ENGLISH_SLOGANS, CHINESE_SLOGANS)
+    for slogan in pair
 )
 
 _FONT_REGULAR = (
@@ -58,10 +100,143 @@ _FONT_MONO = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
 )
+_FONT_MONO_REGULAR = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+)
+_FONT_SLOGAN = (
+    str(_FONT_ASSET_DIR / "msyhbd.ttc"),
+    str(_FONT_ASSET_DIR / "msyh.ttc"),
+    str(_FONT_ASSET_DIR / "NotoSansSC-Slogan-Bold.otf"),
+)
 
 
 class UsageImageError(RuntimeError):
     """Raised when usage data cannot be rendered."""
+
+
+@dataclass(frozen=True)
+class RenderContext:
+    """Immutable input passed to a registered visual design."""
+
+    kimi: Mapping[str, Any] | None
+    deepseek: Mapping[str, Any] | None
+    updated_at: datetime
+    slogan: str
+    width: int = IMAGE_WIDTH
+    height: int = IMAGE_HEIGHT
+
+
+class UsageDesign(Protocol):
+    """Protocol implemented by one dashboard visual design."""
+
+    name: str
+    description: str
+
+    def render(self, context: RenderContext) -> bytes:
+        """Render one complete PNG from a context."""
+
+
+@dataclass(frozen=True)
+class _FunctionDesign:
+    name: str
+    description: str
+    renderer: Callable[[RenderContext], bytes]
+
+    def render(self, context: RenderContext) -> bytes:
+        return self.renderer(context)
+
+
+_DESIGNS: dict[str, UsageDesign] = {}
+
+
+def register_design(
+    name: str,
+    renderer: Callable[[RenderContext], bytes],
+    *,
+    description: str = "",
+) -> None:
+    """Register a named visual design.
+
+    Registration is intentionally small and explicit: adding a new design
+    does not require changing the data collection or push layers.
+    """
+
+    normalized = name.strip().lower()
+    if not normalized:
+        raise ValueError("design name must not be empty")
+    if not callable(renderer):
+        raise TypeError("design renderer must be callable")
+    if normalized == "rotate":
+        raise ValueError("'rotate' is reserved for automatic selection")
+    if normalized in _DESIGNS:
+        raise ValueError(f"design already registered: {normalized}")
+    _DESIGNS[normalized] = _FunctionDesign(
+        name=normalized,
+        description=description.strip(),
+        renderer=renderer,
+    )
+
+
+def list_designs() -> tuple[UsageDesign, ...]:
+    """Return registered designs in deterministic rotation order."""
+
+    return tuple(_DESIGNS.values())
+
+
+def _design_day_number(moment: datetime) -> int:
+    if moment.tzinfo is None:
+        raise ValueError("moment must be timezone-aware")
+    return moment.astimezone(_DISPLAY_TIMEZONE).date().toordinal()
+
+
+def design_index_for_day(moment: datetime, design_count: int) -> int:
+    """Return the phase-shifted design index for a UTC+8 calendar day.
+
+    The slogan cycle has 14 slots. Shifting the design phase once per slogan
+    cycle visits every slogan/design pair for any number of registered
+    designs, including cases where the design count shares a factor with 14.
+    """
+
+    if design_count <= 0:
+        raise ValueError("design_count must be greater than zero")
+    day_number = _design_day_number(moment)
+    slogan_slot = day_number % len(DAILY_SLOGANS)
+    slogan_cycle = day_number // len(DAILY_SLOGANS)
+    return (slogan_slot + slogan_cycle) % design_count
+
+
+def resolve_design_name(
+    design: str,
+    moment: datetime,
+    *,
+    designs: Sequence[UsageDesign] | None = None,
+) -> str:
+    """Resolve an explicit design name or the automatic daily rotation."""
+
+    normalized = design.strip().lower()
+    available = tuple(designs) if designs is not None else list_designs()
+    if not available:
+        raise UsageImageError("No usage image designs are registered")
+    normalized_names: list[str] = []
+    for item in available:
+        item_name = item.name.strip().lower()
+        if not item_name:
+            raise ValueError("registered design name must not be empty")
+        if item_name in normalized_names:
+            raise ValueError(f"duplicate design name: {item_name}")
+        normalized_names.append(item_name)
+    by_name = dict(zip(normalized_names, available))
+    if normalized == "rotate":
+        return normalized_names[
+            design_index_for_day(moment, len(available))
+        ]
+    if normalized not in by_name:
+        available_names = ", ".join(by_name) or "none"
+        raise ValueError(
+            f"unknown design {design!r}; available designs: {available_names}"
+        )
+    return normalized
 
 
 @dataclass
@@ -133,17 +308,22 @@ def _font(
     *,
     weight: str = "regular",
 ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    configured_slogan_font = os.getenv("SLOGAN_FONT_FILE", "").strip()
     candidates = {
         "regular": _FONT_REGULAR,
         "semibold": _FONT_SEMIBOLD,
         "black": _FONT_BLACK,
         "mono": _FONT_MONO,
+        "mono-regular": _FONT_MONO_REGULAR,
+        "slogan": (
+            *((configured_slogan_font,) if configured_slogan_font else ()),
+            *_FONT_SLOGAN,
+        ),
     }[weight]
 
-    scaled_size = max(1, size * _RENDER_SCALE)
     for path in candidates:
         try:
-            return ImageFont.truetype(path, scaled_size)
+            return ImageFont.truetype(path, max(1, size))
         except OSError:
             continue
     return ImageFont.load_default()
@@ -166,6 +346,25 @@ def _one_decimal(value: Any, suffix: str = "") -> str:
     return f"{format(rounded, '.1f')}{suffix}"
 
 
+def _whole_number(value: Any, suffix: str = "") -> str:
+    number = _number(value)
+    if number is None:
+        return "N/A"
+    rounded = number.quantize(_WHOLE_NUMBER, rounding=ROUND_HALF_UP)
+    return f"{format(rounded, '.0f')}{suffix}"
+
+
+def daily_slogan(moment: datetime) -> str:
+    """Return alternating English and Chinese slogans by UTC+8 day."""
+
+    if moment.tzinfo is None:
+        raise ValueError("moment must be timezone-aware")
+    display_day = moment.astimezone(_DISPLAY_TIMEZONE).date()
+    ordinal = display_day.toordinal()
+    pool = ENGLISH_SLOGANS if ordinal % 2 == 0 else CHINESE_SLOGANS
+    return pool[(ordinal // 2) % len(pool)]
+
+
 def _nested(
     payload: Mapping[str, Any] | None,
     section: str,
@@ -180,11 +379,75 @@ def _nested(
 
 
 def _s(value: float | int) -> int:
-    return round(float(value) * _RENDER_SCALE)
+    return round(float(value) * _RENDER_SCALE * _LAYOUT_SCALE)
+
+
+class _Canvas:
+    """Keep shapes supersampled while replaying text at final pixel size."""
+
+    def __init__(self, width: int = IMAGE_WIDTH, height: int = IMAGE_HEIGHT):
+        self.image = Image.new(
+            "L",
+            (width * _RENDER_SCALE, height * _RENDER_SCALE),
+            color=255,
+        )
+        self.draw = ImageDraw.Draw(self.image)
+        self._text_ops: list[
+            tuple[tuple[int, int], str, int, str, int, str | None]
+        ] = []
+
+    def text(
+        self,
+        position: tuple[float, float],
+        text: str,
+        *,
+        size: int,
+        weight: str = "regular",
+        fill: int = 0,
+        anchor: str | None = None,
+    ) -> None:
+        self._text_ops.append(
+            (
+                (
+                    round(position[0] * _LAYOUT_SCALE),
+                    round(position[1] * _LAYOUT_SCALE),
+                ),
+                text,
+                max(1, round(size * _LAYOUT_SCALE)),
+                weight,
+                fill,
+                anchor,
+            )
+        )
+
+    def text_width(self, text: str, size: int, weight: str) -> float:
+        return self.draw.textlength(text, font=_font(size, weight=weight))
+
+    def line(self, *args: Any, **kwargs: Any) -> None:
+        self.draw.line(*args, **kwargs)
+
+    def rectangle(self, *args: Any, **kwargs: Any) -> None:
+        self.draw.rectangle(*args, **kwargs)
+
+    def finalize(self) -> Image.Image:
+        flattened = self.image.resize(
+            (IMAGE_WIDTH, IMAGE_HEIGHT),
+            Image.Resampling.LANCZOS,
+        )
+        text_draw = ImageDraw.Draw(flattened)
+        for position, text, size, weight, fill, anchor in self._text_ops:
+            text_draw.text(
+                position,
+                text,
+                font=_font(size, weight=weight),
+                fill=fill,
+                anchor=anchor,
+            )
+        return flattened
 
 
 def _draw_text(
-    draw: ImageDraw.ImageDraw,
+    draw: _Canvas,
     position: tuple[float, float],
     text: str,
     *,
@@ -194,16 +457,17 @@ def _draw_text(
     anchor: str | None = None,
 ) -> None:
     draw.text(
-        (_s(position[0]), _s(position[1])),
+        position,
         text,
-        font=_font(size, weight=weight),
+        size=size,
+        weight=weight,
         fill=fill,
         anchor=anchor,
     )
 
 
 def _fit_text(
-    draw: ImageDraw.ImageDraw,
+    draw: _Canvas,
     position: tuple[float, float],
     text: str,
     *,
@@ -215,13 +479,12 @@ def _fit_text(
     anchor: str | None = None,
 ) -> None:
     for candidate_size in range(size, minimum_size - 1, -1):
-        font = _font(candidate_size, weight=weight)
-        box = draw.textbbox((0, 0), text, font=font)
-        if box[2] - box[0] <= _s(max_width):
+        if draw.text_width(text, candidate_size, weight) <= max_width:
             draw.text(
-                (_s(position[0]), _s(position[1])),
+                position,
                 text,
-                font=font,
+                size=candidate_size,
+                weight=weight,
                 fill=fill,
                 anchor=anchor,
             )
@@ -238,6 +501,36 @@ def _fit_text(
     )
 
 
+def _draw_chip(
+    draw: _Canvas,
+    *,
+    text: str,
+    left: float,
+    middle: float,
+    size: int = 8,
+    pad_x: int = 5,
+    pad_y: int = 2,
+) -> None:
+    """Draw a compact white-on-black metadata chip."""
+
+    text_width = draw.text_width(text, size, "mono-regular")
+    top = middle - size / 2 - pad_y
+    bottom = middle + size / 2 + pad_y
+    right = left + text_width + 2 * pad_x
+    draw.rectangle(
+        (_s(left), _s(top), _s(right), _s(bottom)),
+        fill=0,
+    )
+    draw.text(
+        (left + pad_x, middle),
+        text,
+        size=size,
+        weight="mono-regular",
+        fill=255,
+        anchor="lm",
+    )
+
+
 def _draw_progress(
     draw: ImageDraw.ImageDraw,
     *,
@@ -249,7 +542,7 @@ def _draw_progress(
     reset_in: Any,
 ) -> None:
     value = _number(percent)
-    percent_text = _one_decimal(percent, "%")
+    percent_text = _whole_number(percent, "%")
 
     _draw_text(
         draw,
@@ -262,12 +555,12 @@ def _draw_progress(
         draw,
         (left, top + 14),
         percent_text,
-        size=24,
+        size=22,
         weight="mono",
     )
 
     reset_text = (
-        str(reset_in).strip().upper()
+        str(reset_in).strip().lower()
         if isinstance(reset_in, str) and reset_in.strip()
         else "N/A"
     )
@@ -278,7 +571,7 @@ def _draw_progress(
         max_width=82,
         size=9,
         minimum_size=7,
-        weight="mono",
+        weight="mono-regular",
         anchor="ra",
     )
 
@@ -332,25 +625,24 @@ def _draw_kimi(
 
     plan = usage.get("user_level")
     plan_text = (
-        str(plan).upper()
+        str(plan).strip().upper()
         if isinstance(plan, str) and plan.strip()
         else "UNKNOWN"
     )
+    title_width = draw.text_width("KIMI", 14, "black")
+    _draw_chip(
+        draw,
+        text=plan_text,
+        left=14 + title_width + 7,
+        middle=61,
+    )
+
     _draw_text(
         draw,
-        (305, 57),
-        "PLAN",
+        (386, 57),
+        "RATE LIMIT",
         size=8,
-        weight="semibold",
-    )
-    _fit_text(
-        draw,
-        (386, 54),
-        plan_text,
-        max_width=75,
-        size=11,
-        minimum_size=8,
-        weight="mono",
+        weight="regular",
         anchor="ra",
     )
 
@@ -358,7 +650,7 @@ def _draw_kimi(
         draw,
         left=14,
         right=190,
-        top=79,
+        top=_KIMI_PROGRESS_TOP,
         label="5 HOUR",
         percent=_nested(usage, "5h", "used_percent"),
         reset_in=_nested(usage, "5h", "reset_in"),
@@ -367,7 +659,7 @@ def _draw_kimi(
         draw,
         left=210,
         right=386,
-        top=79,
+        top=_KIMI_PROGRESS_TOP,
         label="WEEK",
         percent=_nested(usage, "week", "used_percent"),
         reset_in=_nested(usage, "week", "reset_in"),
@@ -396,16 +688,16 @@ def _draw_deepseek_metric(
         (left, top + 20),
         value,
         max_width=right - left,
-        size=26,
-        minimum_size=17,
+        size=_DEEPSEEK_VALUE_SIZE,
+        minimum_size=_DEEPSEEK_VALUE_MINIMUM_SIZE,
         weight="mono",
     )
     _draw_text(
         draw,
-        (left, top + 59),
+        (left, top + _DEEPSEEK_DETAIL_OFFSET),
         detail,
         size=10,
-        weight="mono",
+        weight="mono-regular",
     )
 
 
@@ -413,26 +705,33 @@ def _draw_deepseek(
     draw: ImageDraw.ImageDraw,
     usage: Mapping[str, Any] | None,
 ) -> None:
+    title_width = draw.text_width("DEEPSEEK", 14, "black")
     _draw_text(
         draw,
-        (14, 164),
+        (14, _DEEPSEEK_TOP),
         "DEEPSEEK",
         size=14,
         weight="black",
     )
+    _draw_chip(
+        draw,
+        text="API",
+        left=14 + title_width + 7,
+        middle=_DEEPSEEK_TOP + 7,
+    )
     _draw_text(
         draw,
-        (386, 167),
+        (386, _DEEPSEEK_TOP + 3),
         "TOKENS / SPEND",
         size=8,
-        weight="semibold",
+        weight="regular",
         anchor="ra",
     )
 
     if not isinstance(usage, Mapping):
         _draw_text(
             draw,
-            (200, 229),
+            (200, _DEEPSEEK_METRIC_TOP + 35),
             "UNAVAILABLE",
             size=13,
             weight="black",
@@ -444,8 +743,8 @@ def _draw_deepseek(
         draw,
         left=14,
         right=128,
-        top=194,
-        label="MONTH",
+        top=_DEEPSEEK_METRIC_TOP,
+        label="THIS MONTH",
         value=(
             str(_nested(usage, "month", "tokens")).upper()
             if _nested(usage, "month", "tokens") is not None
@@ -456,7 +755,12 @@ def _draw_deepseek(
         ),
     )
     draw.line(
-        (_s(137), _s(194), _s(137), _s(276)),
+        (
+            _s(137),
+            _s(_DEEPSEEK_METRIC_TOP),
+            _s(137),
+            _s(_DEEPSEEK_LINE_BOTTOM),
+        ),
         fill=0,
         width=_s(1),
     )
@@ -464,7 +768,7 @@ def _draw_deepseek(
         draw,
         left=151,
         right=264,
-        top=194,
+        top=_DEEPSEEK_METRIC_TOP,
         label="TODAY",
         value=(
             str(_nested(usage, "today", "tokens")).upper()
@@ -476,7 +780,12 @@ def _draw_deepseek(
         ),
     )
     draw.line(
-        (_s(273), _s(194), _s(273), _s(276)),
+        (
+            _s(273),
+            _s(_DEEPSEEK_METRIC_TOP),
+            _s(273),
+            _s(_DEEPSEEK_LINE_BOTTOM),
+        ),
         fill=0,
         width=_s(1),
     )
@@ -484,14 +793,70 @@ def _draw_deepseek(
         draw,
         left=287,
         right=386,
-        top=194,
-        label="3D CACHE HIT",
-        value=_one_decimal(
+        top=_DEEPSEEK_METRIC_TOP,
+        label="CACHE HIT",
+        value=_whole_number(
             _nested(usage, "3d", "cache_hit_percent"),
             "%",
         ),
-        detail="HIT RATE",
+        detail="LAST 3 DAYS",
     )
+
+
+def _render_daily_grid(context: RenderContext) -> bytes:
+    """Render the current black-and-white grid design."""
+
+    current = context.updated_at
+    draw = _Canvas(context.width, context.height)
+
+    draw.rectangle(
+        (0, 0, _s(_LOGICAL_WIDTH), _s(_BANNER_HEIGHT)),
+        fill=0,
+    )
+    _fit_text(
+        draw,
+        (14, _BANNER_HEIGHT / 2),
+        context.slogan,
+        max_width=282,
+        size=_SLOGAN_SIZE,
+        minimum_size=_SLOGAN_MINIMUM_SIZE,
+        weight="slogan",
+        fill=255,
+        anchor="lm",
+    )
+    timestamp = (
+        f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
+        f"{current.hour:02d}:{current.minute:02d}"
+    )
+    _draw_text(
+        draw,
+        (386, _BANNER_HEIGHT / 2),
+        timestamp,
+        size=9,
+        weight="mono",
+        fill=255,
+        anchor="rm",
+    )
+
+    draw.line(
+        (_s(14), _s(_SECTION_DIVIDER_Y), _s(386), _s(_SECTION_DIVIDER_Y)),
+        fill=0,
+        width=_s(2),
+    )
+    _draw_kimi(draw, context.kimi)
+    _draw_deepseek(draw, context.deepseek)
+
+    flattened = draw.finalize()
+    output = io.BytesIO()
+    flattened.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+register_design(
+    "daily-grid",
+    _render_daily_grid,
+    description="Current banner, Kimi quota, and DeepSeek metrics layout",
+)
 
 
 def render_usage_image(
@@ -499,73 +864,28 @@ def render_usage_image(
     deepseek_usage: Mapping[str, Any] | None,
     *,
     updated_at: datetime | None = None,
+    design: str = "rotate",
 ) -> bytes:
-    """Return a deterministic 400x300 monochrome PNG."""
+    """Return a deterministic 800x600 grayscale PNG.
 
-    current = updated_at or datetime.now(timezone.utc)
+    ``design='rotate'`` selects a design using the UTC+8 day and the
+    phase-shifted 14-slogan scheduler. Passing a registered name pins the
+    output to that design.
+    """
+
+    current = updated_at or datetime.now(_DISPLAY_TIMEZONE)
     if current.tzinfo is None:
         raise ValueError("updated_at must be timezone-aware")
-    current = current.astimezone(timezone.utc)
-
-    canvas = Image.new(
-        "L",
-        (
-            IMAGE_WIDTH * _RENDER_SCALE,
-            IMAGE_HEIGHT * _RENDER_SCALE,
-        ),
-        color=255,
+    current = current.astimezone(_DISPLAY_TIMEZONE)
+    selected_name = resolve_design_name(design, current)
+    selected = _DESIGNS[selected_name]
+    context = RenderContext(
+        kimi=kimi_usage,
+        deepseek=deepseek_usage,
+        updated_at=current,
+        slogan=daily_slogan(current),
     )
-    draw = ImageDraw.Draw(canvas)
-
-    draw.rectangle(
-        (_s(14), _s(12), _s(18), _s(34)),
-        fill=0,
-    )
-    _draw_text(
-        draw,
-        (27, 10),
-        "API USAGE",
-        size=18,
-        weight="black",
-    )
-    timestamp = (
-        f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
-        f"{current.hour:02d}:{current.minute:02d}Z"
-    )
-    _draw_text(
-        draw,
-        (386, 21),
-        timestamp,
-        size=9,
-        weight="mono",
-        anchor="rm",
-    )
-
-    draw.line(
-        (_s(14), _s(43), _s(386), _s(43)),
-        fill=0,
-        width=_s(1),
-    )
-    draw.line(
-        (_s(14), _s(151), _s(386), _s(151)),
-        fill=0,
-        width=_s(2),
-    )
-    _draw_kimi(draw, kimi_usage)
-    _draw_deepseek(draw, deepseek_usage)
-
-    resized = canvas.resize(
-        (IMAGE_WIDTH, IMAGE_HEIGHT),
-        Image.Resampling.LANCZOS,
-    )
-    monochrome = resized.point(
-        lambda pixel: 255 if pixel >= 168 else 0,
-        mode="1",
-    )
-
-    output = io.BytesIO()
-    monochrome.save(output, format="PNG", optimize=True)
-    return output.getvalue()
+    return selected.render(context)
 
 
 def generate_usage_image(
@@ -576,6 +896,7 @@ def generate_usage_image(
     kimi_api_key_file: str | Path = KIMI_API_KEY_FILE,
     deepseek_dashboard_token: str | None = None,
     updated_at: datetime | None = None,
+    design: str = "rotate",
 ) -> tuple[bytes, UsageCollection]:
     """Collect current usage and return its rendered PNG and source status."""
 
@@ -599,13 +920,27 @@ def generate_usage_image(
         collection.kimi,
         collection.deepseek,
         updated_at=updated_at,
+        design=design,
     )
     return image, collection
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Render Kimi and DeepSeek usage as a 400x300 PNG.",
+        description="Render Kimi and DeepSeek usage as an 800x600 PNG.",
+    )
+    parser.add_argument(
+        "--design",
+        default=os.getenv("USAGE_IMAGE_DESIGN", "rotate"),
+        help=(
+            "Visual design name, or rotate for automatic daily rotation "
+            "(default: rotate)"
+        ),
+    )
+    parser.add_argument(
+        "--list-designs",
+        action="store_true",
+        help="List registered visual designs and exit",
     )
     parser.add_argument(
         "--output",
@@ -638,11 +973,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.list_designs:
+        for design in list_designs():
+            description = f"\t{design.description}" if design.description else ""
+            print(f"{design.name}{description}")
+        return 0
     try:
         image, collection = generate_usage_image(
             args.provider,
             timeout=args.timeout,
             kimi_api_key_file=args.kimi_api_key_file,
+            design=args.design,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(image)

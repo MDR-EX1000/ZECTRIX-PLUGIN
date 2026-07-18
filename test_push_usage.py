@@ -77,9 +77,33 @@ class PushUsageTests(unittest.TestCase):
         )
         self.assertIn(b'name="images"', request.data)
         self.assertIn(b'filename="api-usage.png"', request.data)
-        self.assertIn(b'name="dither"\r\n\r\nfalse', request.data)
+        self.assertIn(b'name="dither"\r\n\r\ntrue', request.data)
         self.assertIn(b'name="pageId"\r\n\r\n1', request.data)
         self.assertNotIn(b"zt-secret", request.data)
+
+    def test_can_disable_server_side_dithering(self):
+        response = {
+            "code": 0,
+            "data": {
+                "totalPages": 1,
+                "pushedPages": 1,
+                "pageId": "1",
+            },
+        }
+        with patch(
+            "push_usage.urlopen",
+            return_value=_FakeResponse(response),
+        ) as mocked_urlopen:
+            push_usage.push_image(
+                "zt-secret",
+                "AA:BB:CC:DD:EE:FF",
+                _usage_png(),
+                api_base_url="https://cloud.example",
+                dither=False,
+            )
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn(b'name="dither"\r\n\r\nfalse', request.data)
 
     def test_lists_devices(self):
         response = {
@@ -138,7 +162,7 @@ class PushUsageTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             push_usage.ZectrixPushError,
-            "must be 400x300",
+            "must be 800x600",
         ):
             push_usage.validate_image(buffer.getvalue())
 
