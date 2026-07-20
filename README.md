@@ -160,24 +160,38 @@ big                             -> page 2
 
 ## 常驻运行（每 10 分钟）
 
-脚本是单次运行程序，常驻运行通过 **cron + `run_usage.sh`** 实现，不需要
-额外的守护进程。配置步骤：
+脚本是单次运行程序，常驻运行通过 **systemd user timer + `run_usage.sh`**
+实现，不需要额外的守护进程。生产机上的单元文件位于：
 
-1. 确认依赖已安装、Token 已按上文写入 `~/.config/zectrix/`；
-2. 先手动跑一次验证：
+```text
+~/.config/systemd/user/zectrix-usage.timer    # OnCalendar=*-*-* *:00/10:00
+~/.config/systemd/user/zectrix-usage.service  # run_usage.sh --all-pages
+```
 
-   ```bash
-   /data/CODE/ZECTRIX/run_usage.sh --all-pages
-   ```
+管理命令：
 
-3. `crontab -e` 加入下面这行，每 10 分钟执行一次：
+```bash
+# 启动 / 停止每 10 分钟的定时推送
+systemctl --user start zectrix-usage.timer
+systemctl --user stop zectrix-usage.timer
 
-   ```cron
-   */10 * * * * /data/CODE/ZECTRIX/run_usage.sh --all-pages >> /data/CODE/ZECTRIX/zectrix-usage.log 2>&1
-   ```
+# 查看下次触发时间
+systemctl --user list-timers zectrix-usage.timer
 
-之后 cron 会每 10 分钟自动采集、生成并推送；日志追加到
-`zectrix-usage.log`。
+# 手动触发一轮（等价于 smoke test）
+systemctl --user start zectrix-usage.service
+
+# 查看日志
+journalctl --user -u zectrix-usage.service
+```
+
+`loginctl enable-linger $USER` 已开启，定时器在用户登出后仍然运行。
+如果目标环境只有 cron 没有 systemd user session，也可以用 crontab 达到
+同样效果：
+
+```cron
+*/10 * * * * /data/CODE/ZECTRIX/run_usage.sh --all-pages >> /data/CODE/ZECTRIX/zectrix-usage.log 2>&1
+```
 
 `run_usage.sh` 的行为保证：
 
