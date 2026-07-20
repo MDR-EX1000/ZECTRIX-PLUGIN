@@ -25,6 +25,7 @@ _FIVE_HOURS_IN_SECONDS = 5 * 60 * 60
 _DEEPSEEK_DISPLAY_PLACES = Decimal("0.1")
 KIMI_USER_LEVEL_MAP = {
     "LEVEL_BASIC": "Moderato",
+    "LEVEL_INTERMEDIATE": "Allegretto",
 }
 
 

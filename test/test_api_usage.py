@@ -51,6 +51,27 @@ class CompactTokensTests(unittest.TestCase):
                 self.assertEqual(api_usage._compact_tokens(tokens), expected)
 
 
+class KimiUsageTests(unittest.TestCase):
+    def test_maps_intermediate_level_to_allegretto(self):
+        payload = {
+            "limits": [],
+            "usage": {},
+            "user": {
+                "membership": {
+                    "level": "LEVEL_INTERMEDIATE",
+                }
+            },
+        }
+
+        with patch(
+            "api_usage.urlopen",
+            return_value=_FakeResponse(payload),
+        ):
+            result = api_usage.usage_kimi(api_key="kimi-key")
+
+        self.assertEqual(result["user_level"], "Allegretto")
+
+
 class DeepSeekUsageTests(unittest.TestCase):
     def test_aggregates_requested_metrics(self):
         jul_1 = 1_782_864_000

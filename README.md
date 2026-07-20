@@ -4,7 +4,7 @@
 
 ```text
 api_usage.py    获取并规范化 Kimi / DeepSeek 用量
-usage_image.py  生成 800x600 灰度 PNG
+usage_image.py  生成 400x300 1-bit 黑白 PNG
 push_usage.py   通过 Zectrix Open API 推送图片
 ```
 
@@ -35,14 +35,15 @@ python3 usage_image.py
 ```
 
 默认生成当前目录的 `./api_usage.png`，后续每次运行直接覆盖该文件。输出为
-800x600；版式使用 400x300 逻辑坐标，因此文字和图形比例保持不变。也可以
-使用 `--output` 指定其他位置。
+设备原生 400x300 1-bit PNG，不经过 JPEG 或其他有损压缩，也不再上传
+800x600 图片交给服务端二次缩放。可以使用 `--output` 指定其他位置。
 
 Banner 左侧使用按东八区日期轮换的 AI Coding Slogan。同一天重复生成时
 保持不变，英文和中文严格隔天交替；右侧显示东八区更新时间。
-项目内置精简的 Noto Sans SC 字体子集。设置 `SLOGAN_FONT_FILE` 可以使用
-本机其他中文字体；本地存在 `assets/fonts/msyhbd.ttc` 或 `msyh.ttc` 时会
-优先使用微软雅黑。
+项目内置精简的 Noto Sans SC Medium 字体子集（`assets/fonts/NotoSansSC-Slogan-Medium.otf`），
+在 400x300 的 E-Ink 面板上比原先 Bold 字重更轻、更清晰。
+设置 `SLOGAN_FONT_FILE` 可以使用本机其他中文字体；本地存在 `assets/fonts/msyh.ttc`
+或 `msyhbd.ttc` 时会作为后备字体使用。
 
 图片设计支持注册多个实现。默认的 `rotate` 会按东八区自然日自动选择设计：
 Slogan 仍然保持原有的 14 条轮换和英文/中文隔天交替。当前自动轮换名单固定
@@ -136,13 +137,9 @@ python3 push_usage.py --dry-run
 ```
 
 自动生成模式每次都会先覆盖当前目录的 `./api_usage.png`，再执行推送。
-生成器输出 8-bit 灰度 PNG，保留文字和图形边缘的灰度信息；推送时默认开启
-Zectrix 服务端抖动，由设备链路负责转换为适合 E-Ink 的黑白点阵。
-需要对比硬阈值效果时使用：
-
-```bash
-python3 push_usage.py --no-dither
-```
+生成器直接输出 1-bit 黑白 PNG，与 E-Ink 面板实际显示一致；`push_usage.py`
+仍保留 `--dither / --no-dither` 选项，但只影响服务端对这张 1-bit 图片的
+后期处理，通常保持默认即可。
 
 生产路由固定为：
 

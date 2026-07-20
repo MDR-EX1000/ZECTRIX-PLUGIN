@@ -1,4 +1,4 @@
-"""Render Kimi and DeepSeek usage as an 800x600 grayscale dashboard."""
+"""Render Kimi and DeepSeek usage as a 400x300 1-bit dashboard."""
 
 from __future__ import annotations
 
@@ -23,16 +23,15 @@ from api_usage import (
 )
 
 
-# The layout remains authored on a 400x300 logical grid and is exported at
-# twice that size for the adopted 800x600 device image.
-IMAGE_WIDTH = 800
-IMAGE_HEIGHT = 600
-_LAYOUT_SCALE = 2
+# The layout is authored directly on the panel's native 400x300 grid.
+IMAGE_WIDTH = 400
+IMAGE_HEIGHT = 300
+_LAYOUT_SCALE = 1
 _LOGICAL_WIDTH = IMAGE_WIDTH // _LAYOUT_SCALE
 _LOGICAL_HEIGHT = IMAGE_HEIGHT // _LAYOUT_SCALE
 _BANNER_HEIGHT = 32
-_SLOGAN_SIZE = 11
-_SLOGAN_MINIMUM_SIZE = 10
+_SLOGAN_SIZE = 13
+_SLOGAN_MINIMUM_SIZE = 11
 _KIMI_PROGRESS_TOP = 78
 _SECTION_DIVIDER_Y = 158
 _DEEPSEEK_TOP = 178
@@ -42,7 +41,9 @@ _DEEPSEEK_SEPARATOR_TOP = 222
 _DEEPSEEK_SEPARATOR_BOTTOM = 257
 _DEEPSEEK_VALUE_SIZE = 20
 _DEEPSEEK_VALUE_MINIMUM_SIZE = 14
-_RENDER_SCALE = 4
+# Geometry is drawn directly on the native 400x300 grid with no resampling,
+# so every line lands on exact pixels; only text AA is quantized at the end.
+_RENDER_SCALE = 1
 _V2_MARGIN = 14
 _V2_CONTENT_RIGHT = _LOGICAL_WIDTH - _V2_MARGIN
 _V2_GAUGE_CENTER_Y = 94
@@ -69,15 +70,15 @@ _V3_DEEPSEEK_DETAIL_TOP = 281
 _V3_DEEPSEEK_SEPARATOR_TOP = 238
 _V3_DEEPSEEK_SEPARATOR_BOTTOM = 280
 _V3_CREDIT_MIDDLE = 162
-_V3_CREDIT_TEXT_SIZE = 9
-_V3_CREDIT_LOGO_SIZE = 18
+_V3_CREDIT_TEXT_SIZE = 12
+_V3_CREDIT_LOGO_SIZE = 24
 _V3_CREDIT_TEXT_LOGO_GAP = 6
 _V3_CREDIT_LOGO_GAP = 5
-_V3_CREDIT_FILL = 80
+_V3_CREDIT_FILL = 0
 _V3_CREDIT_X_BIAS = 8
 _V3_CREDIT_LOGO_X_BIAS = 6
 _V3_CREDIT_Y_BIAS = 6
-_CHIP_RADIUS = 2
+_CHIP_RADIUS = 3
 _ONE_DECIMAL = Decimal("0.1")
 _WHOLE_NUMBER = Decimal("1")
 _DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
@@ -132,6 +133,10 @@ _FONT_SEMIBOLD = (
     "/usr/share/fonts/truetype/lato/Lato-Semibold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 )
+_FONT_BOLD = (
+    "/usr/share/fonts/truetype/lato/Lato-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
 _FONT_BLACK = (
     "/usr/share/fonts/truetype/lato/Lato-Black.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -145,14 +150,15 @@ _FONT_MONO_REGULAR = (
     "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
 )
 _FONT_SLOGAN = (
-    str(_FONT_ASSET_DIR / "msyhbd.ttc"),
+    str(_FONT_ASSET_DIR / "NotoSansSC-Slogan-Medium.otf"),
     str(_FONT_ASSET_DIR / "msyh.ttc"),
+    str(_FONT_ASSET_DIR / "msyhbd.ttc"),
     str(_FONT_ASSET_DIR / "NotoSansSC-Slogan-Bold.otf"),
 )
 _FONT_CREDIT = (
-    "/usr/share/fonts/truetype/lato/Lato-Italic.ttf",
-    "/usr/share/fonts/truetype/lato/Lato-LightItalic.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+    "/usr/share/fonts/truetype/lato/Lato-Semibold.ttf",
+    "/usr/share/fonts/truetype/lato/Lato-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 )
 
 
@@ -370,6 +376,7 @@ def _font(
     candidates = {
         "regular": _FONT_REGULAR,
         "semibold": _FONT_SEMIBOLD,
+        "bold": _FONT_BOLD,
         "black": _FONT_BLACK,
         "mono": _FONT_MONO,
         "mono-regular": _FONT_MONO_REGULAR,
@@ -413,6 +420,19 @@ def _whole_number(value: Any, suffix: str = "") -> str:
     return f"{format(rounded, '.0f')}{suffix}"
 
 
+def _decimal_with_space(value: Any, suffix: str = "") -> str:
+    """Format a one-decimal number with a hair space after the decimal point.
+
+    On a 400x300 1-bit panel a baseline dot tends to fuse with the adjacent
+    digits; a hair space keeps '44.3' readable without changing the number.
+    """
+
+    text = _one_decimal(value, suffix)
+    if text == "N/A":
+        return text
+    return text.replace(".", ".\u200a")
+
+
 def daily_slogan(moment: datetime) -> str:
     """Return alternating English and Chinese slogans by UTC+8 day."""
 
@@ -422,6 +442,12 @@ def daily_slogan(moment: datetime) -> str:
     ordinal = display_day.toordinal()
     pool = ENGLISH_SLOGANS if ordinal % 2 == 0 else CHINESE_SLOGANS
     return pool[(ordinal // 2) % len(pool)]
+
+
+def _slogan_weight(text: str) -> str:
+    """Latin slogans use Lato Bold; CJK slogans use the CJK slogan font."""
+
+    return "bold" if text.isascii() else "slogan"
 
 
 def _nested(
@@ -442,7 +468,7 @@ def _s(value: float | int) -> int:
 
 
 class _Canvas:
-    """Keep shapes supersampled while replaying text at final pixel size."""
+    """Draw shapes at native panel resolution and replay text, then quantize."""
 
     def __init__(self, width: int = IMAGE_WIDTH, height: int = IMAGE_HEIGHT):
         self.image = Image.new(
@@ -513,14 +539,45 @@ class _Canvas:
     def line(self, *args: Any, **kwargs: Any) -> None:
         self.draw.line(*args, **kwargs)
 
-    def rectangle(self, *args: Any, **kwargs: Any) -> None:
-        self.draw.rectangle(*args, **kwargs)
+    def fill_rect(
+        self,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        *,
+        fill: int,
+    ) -> None:
+        """Fill the half-open box [left, right) x [top, bottom) exactly."""
+
+        self.draw.rectangle((left, top, right - 1, bottom - 1), fill=fill)
+
+    def outline_rect(
+        self,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        *,
+        outline: int,
+        width: int,
+    ) -> None:
+        """Stroke the half-open box [left, right) x [top, bottom) exactly."""
+
+        self.draw.rectangle(
+            (left, top, right - 1, bottom - 1),
+            outline=outline,
+            width=width,
+        )
 
     def finalize(self) -> Image.Image:
-        flattened = self.image.resize(
-            (IMAGE_WIDTH, IMAGE_HEIGHT),
-            Image.Resampling.LANCZOS,
-        )
+        if self.image.size == (IMAGE_WIDTH, IMAGE_HEIGHT):
+            flattened = self.image
+        else:
+            flattened = self.image.resize(
+                (IMAGE_WIDTH, IMAGE_HEIGHT),
+                Image.Resampling.LANCZOS,
+            )
         text_draw = ImageDraw.Draw(flattened)
         for position, text, size, weight, fill, anchor in self._text_ops:
             text_draw.text(
@@ -530,7 +587,9 @@ class _Canvas:
                 fill=fill,
                 anchor=anchor,
             )
-        return flattened
+        # Hard-threshold to 1-bit so the saved PNG matches the panel exactly;
+        # dithering would scatter the anti-aliased edges into noise.
+        return flattened.convert("1", dither=Image.Dither.NONE)
 
 
 def _draw_text(
@@ -588,6 +647,47 @@ def _fit_text(
     )
 
 
+def _fit_cap_centered_text(
+    draw: _Canvas,
+    position: tuple[float, float],
+    text: str,
+    *,
+    max_width: int,
+    size: int,
+    minimum_size: int,
+    weight: str,
+    fill: int = 0,
+    anchor: str = "lm",
+) -> None:
+    """Shrink text to fit, then draw it cap-height centered vertically.
+
+    Banner slogans are short lines in tight vertical boxes; aligning on the
+    visible glyph center instead of the font metrics middle keeps Latin and
+    CJK slogans at the same optical center.
+    """
+
+    for candidate_size in range(size, minimum_size - 1, -1):
+        if draw.text_width(text, candidate_size, weight) <= max_width:
+            draw.cap_centered_text(
+                position,
+                text,
+                size=candidate_size,
+                weight=weight,
+                fill=fill,
+                anchor=anchor,
+            )
+            return
+
+    draw.cap_centered_text(
+        position,
+        text,
+        size=minimum_size,
+        weight=weight,
+        fill=fill,
+        anchor=anchor,
+    )
+
+
 def _draw_chip_background(
     draw: _Canvas,
     *,
@@ -600,7 +700,7 @@ def _draw_chip_background(
     """Draw a small-radius chip without turning it into a pill."""
 
     draw.draw.rounded_rectangle(
-        (_s(left), _s(top), _s(right), _s(bottom)),
+        (_s(left), _s(top), _s(right) - 1, _s(bottom) - 1),
         radius=max(1, _s(_CHIP_RADIUS)),
         fill=fill,
     )
@@ -612,13 +712,13 @@ def _draw_chip(
     text: str,
     left: float,
     middle: float,
-    size: int = 8,
+    size: int = 9,
     pad_x: int = 5,
     pad_y: int = 2,
 ) -> None:
     """Draw a compact white-on-black metadata chip."""
 
-    text_width = draw.text_width(text, size, "mono-regular")
+    text_width = draw.text_width(text, size, "bold")
     top = middle - size / 2 - pad_y
     bottom = middle + size / 2 + pad_y
     right = left + text_width + 2 * pad_x
@@ -634,9 +734,32 @@ def _draw_chip(
         (left + pad_x, middle),
         text,
         size=size,
-        weight="mono-regular",
+        weight="bold",
         fill=255,
         anchor="lm",
+    )
+
+
+def _format_reset_in(reset_in: Any, *, max_units: int = 2) -> str:
+    """Normalize a duration string to compact uppercase form.
+
+    Keeps the original dense format ('6D19H') so reset lines stay compact
+    while still being rendered at the larger 11px size for readability.
+    """
+
+    text = (
+        str(reset_in).strip().upper()
+        if isinstance(reset_in, str) and reset_in.strip()
+        else ""
+    )
+    if not text:
+        return "N/A"
+    parts = re.findall(r"(\d+)([DHM][A-Z]*)", text)
+    if not parts:
+        return text
+    return "".join(
+        f"{value}{unit}"
+        for value, unit in parts[:max_units]
     )
 
 
@@ -657,54 +780,53 @@ def _draw_progress(
         draw,
         (left, top),
         label,
-        size=9,
-        weight="semibold",
+        size=10,
+        weight="bold",
     )
     _draw_text(
         draw,
         (left, top + 14),
         percent_text,
         size=22,
-        weight="mono",
+        weight="black",
     )
 
-    reset_text = (
-        str(reset_in).strip().lower()
-        if isinstance(reset_in, str) and reset_in.strip()
-        else "N/A"
-    )
     _fit_text(
         draw,
-        (right, top + 28),
-        f"RESET {reset_text}",
+        (right, top + 22),
+        f"RESET {_format_reset_in(reset_in)}",
         max_width=82,
-        size=9,
-        minimum_size=7,
-        weight="mono-regular",
+        size=11,
+        minimum_size=10,
+        weight="bold",
         anchor="ra",
     )
 
     bar_top = top + 51
     bar_bottom = bar_top + 8
-    bar_middle = bar_top + 4
-    draw.line(
-        (_s(left), _s(bar_middle), _s(right), _s(bar_middle)),
-        fill=0,
-        width=_s(1),
+    draw.outline_rect(
+        _s(left),
+        _s(bar_top),
+        _s(right),
+        _s(bar_bottom),
+        outline=0,
+        width=_s(2),
     )
     if value is not None:
         bounded = max(Decimal("0"), min(Decimal("100"), value))
+        inner_left = left + 2
+        inner_right = right - 2
+        inner_top = bar_top + 2
+        inner_bottom = bar_bottom - 2
         fill_width = round(
-            float(bounded / Decimal("100")) * (right - left)
+            float(bounded / Decimal("100")) * (inner_right - inner_left)
         )
         if fill_width > 0:
-            draw.rectangle(
-                (
-                    _s(left),
-                    _s(bar_top),
-                    _s(left + fill_width),
-                    _s(bar_bottom),
-                ),
+            draw.fill_rect(
+                _s(inner_left),
+                _s(inner_top),
+                _s(inner_left + fill_width),
+                _s(inner_bottom),
                 fill=0,
             )
 
@@ -750,8 +872,8 @@ def _draw_kimi(
         draw,
         (386, 57),
         "RATE LIMIT",
-        size=8,
-        weight="regular",
+        size=9,
+        weight="bold",
         anchor="ra",
     )
 
@@ -790,7 +912,7 @@ def _draw_deepseek_metric(
         (left, top),
         label,
         size=9,
-        weight="semibold",
+        weight="bold",
     )
     _fit_text(
         draw,
@@ -799,14 +921,14 @@ def _draw_deepseek_metric(
         max_width=right - left,
         size=_DEEPSEEK_VALUE_SIZE,
         minimum_size=_DEEPSEEK_VALUE_MINIMUM_SIZE,
-        weight="mono",
+        weight="black",
     )
     _draw_text(
         draw,
         (left, top + _DEEPSEEK_DETAIL_OFFSET),
         detail,
-        size=10,
-        weight="mono-regular",
+        size=11,
+        weight="bold",
     )
 
 
@@ -831,9 +953,9 @@ def _draw_deepseek(
     _draw_text(
         draw,
         (386, _DEEPSEEK_TOP + 3),
-        "TOKENS / SPEND",
-        size=8,
-        weight="regular",
+        "TOKENS · SPEND",
+        size=11,
+        weight="bold",
         anchor="ra",
     )
 
@@ -860,7 +982,7 @@ def _draw_deepseek(
             else "N/A"
         ),
         detail=(
-            f"CNY {_one_decimal(_nested(usage, 'month', 'cost_cny'))}"
+            f"CNY {_decimal_with_space(_nested(usage, 'month', 'cost_cny'))}"
         ),
     )
     draw.line(
@@ -871,7 +993,7 @@ def _draw_deepseek(
             _s(_DEEPSEEK_SEPARATOR_BOTTOM),
         ),
         fill=0,
-        width=_s(1),
+        width=_s(2),
     )
     _draw_deepseek_metric(
         draw,
@@ -885,7 +1007,7 @@ def _draw_deepseek(
             else "N/A"
         ),
         detail=(
-            f"CNY {_one_decimal(_nested(usage, 'today', 'cost_cny'))}"
+            f"CNY {_decimal_with_space(_nested(usage, 'today', 'cost_cny'))}"
         ),
     )
     draw.line(
@@ -896,7 +1018,7 @@ def _draw_deepseek(
             _s(_DEEPSEEK_SEPARATOR_BOTTOM),
         ),
         fill=0,
-        width=_s(1),
+        width=_s(2),
     )
     _draw_deepseek_metric(
         draw,
@@ -928,10 +1050,10 @@ def _draw_v2_chip(
     if (left is None) == (right is None):
         raise ValueError("pass exactly one of left or right")
     scaled_size = max(1, round(size * _LAYOUT_SCALE))
-    font = _font(scaled_size, weight="mono-regular")
+    font = _font(scaled_size, weight="bold")
     cap_box = draw.draw.textbbox((0, 0), text, font=font, anchor="ls")
     cap_height = (cap_box[3] - cap_box[1]) / _LAYOUT_SCALE
-    text_width = draw.text_width(text, size, "mono-regular")
+    text_width = draw.text_width(text, size, "bold")
     if left is None:
         left = right - text_width - 2 * pad_x
     top = middle - cap_height / 2 - pad_y
@@ -948,7 +1070,7 @@ def _draw_v2_chip(
         (left + pad_x, middle),
         text,
         size=size,
-        weight="mono-regular",
+        weight="bold",
         fill=255,
         anchor="lm",
     )
@@ -965,15 +1087,13 @@ def _draw_v2_unavailable(
     text_width = draw.text_width(text, size, "black")
     half_width = text_width / 2 + pad_x
     half_height = size / 2 + pad_y
-    draw.rectangle(
-        (
-            _s(center[0] - half_width),
-            _s(center[1] - half_height),
-            _s(center[0] + half_width),
-            _s(center[1] + half_height),
-        ),
+    draw.outline_rect(
+        _s(center[0] - half_width),
+        _s(center[1] - half_height),
+        _s(center[0] + half_width),
+        _s(center[1] + half_height),
         outline=0,
-        width=_s(1),
+        width=_s(2),
     )
     draw.text(
         center,
@@ -1010,7 +1130,7 @@ def _draw_v2_gauge(
             (center_x, center_y - 12),
             "N/A",
             size=14,
-            weight="mono",
+            weight="black",
             anchor="mm",
         )
     else:
@@ -1024,21 +1144,21 @@ def _draw_v2_gauge(
                 width=_s(_V2_GAUGE_ARC_WIDTH),
             )
         number_text = f"{float(bounded):.0f}"
-        number_width = draw.text_width(number_text, 24, "mono")
-        unit_width = draw.text_width("%", 11, "mono")
+        number_width = draw.text_width(number_text, 24, "black")
+        unit_width = draw.text_width("%", 11, "black")
         start_x = center_x - (number_width + 2 + unit_width) / 2
         draw.cap_centered_text(
             (start_x, center_y - 12),
             number_text,
             size=24,
-            weight="mono",
+            weight="black",
             anchor="lm",
         )
         draw.cap_centered_text(
             (start_x + number_width + 2, center_y - 16),
             "%",
             size=11,
-            weight="mono",
+            weight="black",
             anchor="lm",
         )
 
@@ -1046,20 +1166,14 @@ def _draw_v2_gauge(
         (center_x, center_y + 9),
         label,
         size=9,
-        weight="semibold",
+        weight="bold",
         anchor="mm",
     )
-    reset_text = (
-        str(reset_in).strip().lower()
-        if isinstance(reset_in, str) and reset_in.strip()
-        else "N/A"
-    )
-    reset_text = re.sub(r"^(\d+d\d+h).*$", r"\1", reset_text)
     draw.cap_centered_text(
         (center_x, center_y + 22),
-        f"RESET {reset_text}",
-        size=8,
-        weight="mono",
+        f"RESET {_format_reset_in(reset_in)}",
+        size=9,
+        weight="bold",
         anchor="mm",
     )
 
@@ -1095,14 +1209,14 @@ def _draw_v2_header(
     draw.cap_centered_text(
         (_V2_CONTENT_RIGHT, row_middle),
         "RATE LIMIT",
-        size=9,
-        weight="semibold",
+        size=10,
+        weight="bold",
         anchor="rm",
     )
     draw.line(
         (_s(_V2_MARGIN), _s(34), _s(_V2_CONTENT_RIGHT), _s(34)),
         fill=0,
-        width=_s(1),
+        width=_s(2),
     )
 
 
@@ -1145,21 +1259,21 @@ def _draw_v2_deepseek_metric(
         (left, 228),
         label,
         size=10,
-        weight="semibold",
+        weight="bold",
         anchor="lm",
     )
     draw.cap_centered_text(
         (left, 250),
         value,
         size=18,
-        weight="mono",
+        weight="black",
         anchor="lm",
     )
     draw.cap_centered_text(
         (left, 277),
         detail,
-        size=10,
-        weight="mono",
+        size=11,
+        weight="bold",
         anchor="lm",
     )
 
@@ -1171,31 +1285,33 @@ def _draw_v2_banner(
 ) -> None:
     top, bottom = 156, 180
     middle = (top + bottom) / 2
-    draw.rectangle(
-        (0, _s(top), _s(_LOGICAL_WIDTH), _s(bottom)),
+    draw.fill_rect(
+        0,
+        _s(top),
+        _s(_LOGICAL_WIDTH),
+        _s(bottom),
         fill=0,
     )
     timestamp = (
         f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
-        f"{current.hour:02d}:{current.minute:02d}"
+        f"{current.hour:02d}\u2009:\u2009{current.minute:02d}"
     )
-    _draw_text(
-        draw,
+    draw.cap_centered_text(
         (_V2_MARGIN, middle),
         timestamp,
-        size=9,
-        weight="mono",
+        size=10,
+        weight="bold",
         fill=255,
         anchor="lm",
     )
-    _fit_text(
+    _fit_cap_centered_text(
         draw,
         (_V2_CONTENT_RIGHT, middle),
         slogan,
         max_width=240,
-        size=9,
-        minimum_size=7,
-        weight="slogan",
+        size=13,
+        minimum_size=11,
+        weight=_slogan_weight(slogan),
         fill=255,
         anchor="rm",
     )
@@ -1223,15 +1339,15 @@ def _draw_v2_deepseek(
     )
     draw.cap_centered_text(
         (_V2_CONTENT_RIGHT, title_middle),
-        "TOKENS / SPEND",
-        size=9,
-        weight="semibold",
+        "TOKENS · SPEND",
+        size=11,
+        weight="bold",
         anchor="rm",
     )
     draw.line(
         (_s(_V2_MARGIN), _s(214), _s(_V2_CONTENT_RIGHT), _s(214)),
         fill=0,
-        width=_s(1),
+        width=_s(2),
     )
 
     if not isinstance(usage, Mapping):
@@ -1247,7 +1363,7 @@ def _draw_v2_deepseek(
             if _nested(usage, "month", "tokens") is not None
             else "N/A"
         ),
-        detail=f"CNY {_one_decimal(_nested(usage, 'month', 'cost_cny'))}",
+        detail=f"CNY {_decimal_with_space(_nested(usage, 'month', 'cost_cny'))}",
     )
     _draw_v2_deepseek_metric(
         draw,
@@ -1258,7 +1374,7 @@ def _draw_v2_deepseek(
             if _nested(usage, "today", "tokens") is not None
             else "N/A"
         ),
-        detail=f"CNY {_one_decimal(_nested(usage, 'today', 'cost_cny'))}",
+        detail=f"CNY {_decimal_with_space(_nested(usage, 'today', 'cost_cny'))}",
     )
     _draw_v2_deepseek_metric(
         draw,
@@ -1274,7 +1390,7 @@ def _draw_v2_deepseek(
         draw.line(
             (_s(divider_x), _s(241), _s(divider_x), _s(259)),
             fill=0,
-            width=_s(1),
+            width=_s(2),
         )
 
 
@@ -1294,9 +1410,7 @@ def _render_ring_gauge(context: RenderContext) -> bytes:
 
 
 def _v3_reset_text(reset_in: Any) -> str:
-    if isinstance(reset_in, str) and reset_in.strip():
-        return reset_in.strip().lower()
-    return "N/A"
+    return _format_reset_in(reset_in)
 
 
 def _v3_cap_height(
@@ -1352,26 +1466,25 @@ def _draw_v3_header(
     current: datetime,
     slogan: str,
 ) -> None:
-    _fit_text(
+    _fit_cap_centered_text(
         draw,
         (14, _V3_HEADER_MIDDLE),
         slogan,
         max_width=282,
-        size=11,
-        minimum_size=10,
-        weight="slogan",
+        size=13,
+        minimum_size=11,
+        weight=_slogan_weight(slogan),
         anchor="lm",
     )
     timestamp = (
         f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
-        f"{current.hour:02d}:{current.minute:02d}"
+        f"{current.hour:02d}\u2009:\u2009{current.minute:02d}"
     )
-    _draw_text(
-        draw,
+    draw.cap_centered_text(
         (386, _V3_HEADER_MIDDLE),
         timestamp,
-        size=9,
-        weight="mono",
+        size=10,
+        weight="bold",
         anchor="rm",
     )
     draw.line(
@@ -1382,7 +1495,7 @@ def _draw_v3_header(
             _s(_V3_HEADER_RULE_Y),
         ),
         fill=0,
-        width=_s(1),
+        width=_s(2),
     )
 
 
@@ -1469,7 +1582,7 @@ def _draw_v3_credit(
     if kimi_logo is not None:
         logo_items.append((kimi_logo, logo_size))
     if deepseek_logo is not None:
-        logo_items.append((deepseek_logo, logo_size + 2))
+        logo_items.append((deepseek_logo, logo_size + 4))
 
     caption_width = draw.text_width(caption, caption_size, "credit")
     logo_width = sum(size for _, size in logo_items)
@@ -1511,17 +1624,17 @@ def _draw_v3_light_chip(
     text: str,
     left: float,
     middle: float,
-    size: int = 8,
+    size: int = 9,
     pad_x: int = 5,
     pad_y: int = 3,
 ) -> None:
     """Draw an inverted black-on-white chip for the dark metrics band."""
 
     scaled_size = max(1, round(size * _LAYOUT_SCALE))
-    font = _font(scaled_size, weight="mono-regular")
+    font = _font(scaled_size, weight="bold")
     cap_box = draw.draw.textbbox((0, 0), text, font=font, anchor="ls")
     cap_height = (cap_box[3] - cap_box[1]) / _LAYOUT_SCALE
-    text_width = draw.text_width(text, size, "mono-regular")
+    text_width = draw.text_width(text, size, "bold")
     top = middle - cap_height / 2 - pad_y
     bottom = middle + cap_height / 2 + pad_y
     _draw_chip_background(
@@ -1536,7 +1649,7 @@ def _draw_v3_light_chip(
         (left + pad_x, middle),
         text,
         size=size,
-        weight="mono-regular",
+        weight="bold",
         fill=0,
         anchor="lm",
     )
@@ -1549,20 +1662,47 @@ def _draw_v3_kimi(
     deepseek_logo: Image.Image | None = None,
     kimi_logo: Image.Image | None = None,
 ) -> None:
-    label = "KIMI · WEEK"
+    label_left = "KIMI"
+    label_right = "WEEK"
+    gap = 6
+    dot_size = 2
     _draw_text(
         draw,
         (14, _V3_KIMI_LABEL_TOP),
-        label,
-        size=10,
-        weight="semibold",
+        label_left,
+        size=12,
+        weight="bold",
+    )
+    left_width = draw.text_width(label_left, 12, "bold")
+    label_middle = _v3_cap_middle(
+        draw,
+        label_left,
+        top=_V3_KIMI_LABEL_TOP,
+        size=12,
+        weight="bold",
+    )
+    dot_x = 14 + left_width + gap
+    dot_y = round(label_middle) - 1
+    draw.fill_rect(
+        dot_x,
+        dot_y,
+        dot_x + dot_size,
+        dot_y + dot_size,
+        fill=0,
+    )
+    _draw_text(
+        draw,
+        (dot_x + dot_size + gap, _V3_KIMI_LABEL_TOP),
+        label_right,
+        size=12,
+        weight="bold",
     )
     _draw_text(
         draw,
         (_V3_RIGHT_COLUMN_X, _V3_KIMI_LABEL_TOP),
         "5 HOUR",
-        size=10,
-        weight="semibold",
+        size=12,
+        weight="bold",
     )
     draw.line(
         (
@@ -1572,7 +1712,7 @@ def _draw_v3_kimi(
             _s(_V3_DIVIDER_BOTTOM),
         ),
         fill=0,
-        width=_s(1),
+        width=_s(2),
     )
 
     if not isinstance(usage, Mapping):
@@ -1590,19 +1730,12 @@ def _draw_v3_kimi(
         if isinstance(plan, str) and plan.strip()
         else "UNKNOWN"
     )
-    label_middle = _v3_cap_middle(
-        draw,
-        label,
-        top=_V3_KIMI_LABEL_TOP,
-        size=10,
-        weight="semibold",
-    )
     _draw_v2_chip(
         draw,
         text=plan_text,
         right=386,
         middle=label_middle,
-        size=8,
+        size=9,
         pad_x=5,
         pad_y=3,
     )
@@ -1626,15 +1759,13 @@ def _draw_v3_kimi(
             unit_size=22,
         )
 
-    draw.rectangle(
-        (
-            _s(_V3_KIMI_BAR_LEFT),
-            _s(_V3_KIMI_BAR_TOP),
-            _s(_V3_KIMI_BAR_RIGHT),
-            _s(_V3_KIMI_BAR_BOTTOM),
-        ),
+    draw.outline_rect(
+        _s(_V3_KIMI_BAR_LEFT),
+        _s(_V3_KIMI_BAR_TOP),
+        _s(_V3_KIMI_BAR_RIGHT),
+        _s(_V3_KIMI_BAR_BOTTOM),
         outline=0,
-        width=_s(1),
+        width=_s(2),
     )
     if week_percent is not None:
         bounded = max(Decimal("0"), min(Decimal("100"), week_percent))
@@ -1643,13 +1774,11 @@ def _draw_v3_kimi(
             * (_V3_KIMI_BAR_RIGHT - _V3_KIMI_BAR_LEFT)
         )
         if fill_width > 0:
-            draw.rectangle(
-                (
-                    _s(_V3_KIMI_BAR_LEFT),
-                    _s(_V3_KIMI_BAR_TOP),
-                    _s(_V3_KIMI_BAR_LEFT + fill_width),
-                    _s(_V3_KIMI_BAR_BOTTOM),
-                ),
+            draw.fill_rect(
+                _s(_V3_KIMI_BAR_LEFT),
+                _s(_V3_KIMI_BAR_TOP),
+                _s(_V3_KIMI_BAR_LEFT + fill_width),
+                _s(_V3_KIMI_BAR_BOTTOM),
                 fill=0,
             )
     _draw_text(
@@ -1657,8 +1786,8 @@ def _draw_v3_kimi(
         (14, _V3_KIMI_CAPTION_TOP),
         "USED · RESET "
         f"{_v3_reset_text(_nested(usage, 'week', 'reset_in'))}",
-        size=9,
-        weight="mono",
+        size=11,
+        weight="bold",
     )
 
     five_hour_percent = _number(_nested(usage, "5h", "used_percent"))
@@ -1668,7 +1797,7 @@ def _draw_v3_kimi(
             (_V3_RIGHT_COLUMN_X, 77),
             "N/A",
             size=24,
-            weight="mono",
+            weight="black",
         )
     else:
         _draw_v3_number_with_unit(
@@ -1678,15 +1807,15 @@ def _draw_v3_kimi(
             number_text=_whole_number(five_hour_percent),
             number_size=30,
             unit_size=12,
-            weight="mono",
+            weight="black",
         )
     _draw_text(
         draw,
         (_V3_RIGHT_COLUMN_X, 112),
         "RESET "
         f"{_v3_reset_text(_nested(usage, '5h', 'reset_in'))}",
-        size=9,
-        weight="mono",
+        size=11,
+        weight="bold",
     )
     _draw_v3_credit(
         draw,
@@ -1708,7 +1837,7 @@ def _draw_v3_deepseek_metric(
         (left, _V3_DEEPSEEK_LABEL_TOP),
         label,
         size=9,
-        weight="mono",
+        weight="bold",
         fill=255,
     )
     _fit_text(
@@ -1718,15 +1847,15 @@ def _draw_v3_deepseek_metric(
         max_width=118,
         size=20,
         minimum_size=14,
-        weight="mono",
+        weight="black",
         fill=255,
     )
     _draw_text(
         draw,
         (left, _V3_DEEPSEEK_DETAIL_TOP),
         detail,
-        size=8,
-        weight="mono",
+        size=11,
+        weight="bold",
         fill=255,
     )
 
@@ -1735,13 +1864,11 @@ def _draw_v3_deepseek(
     draw: _Canvas,
     usage: Mapping[str, Any] | None,
 ) -> None:
-    draw.rectangle(
-        (
-            0,
-            _s(_V3_DEEPSEEK_BAND_TOP),
-            _s(_LOGICAL_WIDTH),
-            _s(_LOGICAL_HEIGHT),
-        ),
+    draw.fill_rect(
+        0,
+        _s(_V3_DEEPSEEK_BAND_TOP),
+        _s(_LOGICAL_WIDTH),
+        _s(_LOGICAL_HEIGHT),
         fill=0,
     )
     _draw_text(
@@ -1749,7 +1876,7 @@ def _draw_v3_deepseek(
         (14, _V3_DEEPSEEK_TITLE_TOP),
         "DEEPSEEK",
         size=11,
-        weight="mono",
+        weight="black",
         fill=255,
     )
     title_middle = _v3_cap_middle(
@@ -1757,20 +1884,20 @@ def _draw_v3_deepseek(
         "DEEPSEEK",
         top=_V3_DEEPSEEK_TITLE_TOP,
         size=11,
-        weight="mono",
+        weight="black",
     )
     _draw_v3_light_chip(
         draw,
         text="API",
-        left=14 + draw.text_width("DEEPSEEK", 11, "mono") + 6,
+        left=14 + draw.text_width("DEEPSEEK", 11, "black") + 6,
         middle=title_middle,
     )
     _draw_text(
         draw,
         (386, _V3_DEEPSEEK_TITLE_TOP + 2),
-        "TOKENS / SPEND",
-        size=8,
-        weight="mono",
+        "TOKENS · SPEND",
+        size=11,
+        weight="bold",
         fill=255,
         anchor="ra",
     )
@@ -1796,7 +1923,7 @@ def _draw_v3_deepseek(
             if _nested(usage, "month", "tokens") is not None
             else "N/A"
         ),
-        detail=f"CNY {_one_decimal(_nested(usage, 'month', 'cost_cny'))}",
+        detail=f"CNY {_decimal_with_space(_nested(usage, 'month', 'cost_cny'))}",
     )
     _draw_v3_deepseek_metric(
         draw,
@@ -1807,7 +1934,7 @@ def _draw_v3_deepseek(
             if _nested(usage, "today", "tokens") is not None
             else "N/A"
         ),
-        detail=f"CNY {_one_decimal(_nested(usage, 'today', 'cost_cny'))}",
+        detail=f"CNY {_decimal_with_space(_nested(usage, 'today', 'cost_cny'))}",
     )
     _draw_v3_deepseek_metric(
         draw,
@@ -1828,7 +1955,7 @@ def _draw_v3_deepseek(
                 _s(_V3_DEEPSEEK_SEPARATOR_BOTTOM),
             ),
             fill=255,
-            width=_s(1),
+            width=_s(2),
         )
 
 
@@ -1857,31 +1984,33 @@ def _render_daily_grid(context: RenderContext) -> bytes:
     current = context.updated_at
     draw = _Canvas(context.width, context.height)
 
-    draw.rectangle(
-        (0, 0, _s(_LOGICAL_WIDTH), _s(_BANNER_HEIGHT)),
+    draw.fill_rect(
+        0,
+        0,
+        _s(_LOGICAL_WIDTH),
+        _s(_BANNER_HEIGHT),
         fill=0,
     )
-    _fit_text(
+    _fit_cap_centered_text(
         draw,
         (14, _BANNER_HEIGHT / 2),
         context.slogan,
         max_width=282,
         size=_SLOGAN_SIZE,
         minimum_size=_SLOGAN_MINIMUM_SIZE,
-        weight="slogan",
+        weight=_slogan_weight(context.slogan),
         fill=255,
         anchor="lm",
     )
     timestamp = (
         f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
-        f"{current.hour:02d}:{current.minute:02d}"
+        f"{current.hour:02d}\u2009:\u2009{current.minute:02d}"
     )
-    _draw_text(
-        draw,
+    draw.cap_centered_text(
         (386, _BANNER_HEIGHT / 2),
         timestamp,
-        size=9,
-        weight="mono",
+        size=10,
+        weight="bold",
         fill=255,
         anchor="rm",
     )
@@ -1925,7 +2054,7 @@ def render_usage_image(
     updated_at: datetime | None = None,
     design: str = "rotate",
 ) -> bytes:
-    """Return a deterministic 800x600 grayscale PNG.
+    """Return a deterministic 400x300 1-bit PNG.
 
     ``design='rotate'`` selects a design using the UTC+8 calendar day.
     Passing a registered name pins the output to that design.
@@ -1985,7 +2114,7 @@ def generate_usage_image(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Render Kimi and DeepSeek usage as an 800x600 PNG.",
+        description="Render Kimi and DeepSeek usage as a 400x300 PNG.",
     )
     parser.add_argument(
         "--design",

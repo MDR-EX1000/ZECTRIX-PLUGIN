@@ -45,7 +45,7 @@ class UsageImageTests(unittest.TestCase):
             ["daily-grid", "ring-gauge", "big"],
         )
 
-    def test_ring_gauge_design_renders_800x600(self):
+    def test_ring_gauge_design_renders_400x300(self):
         png = usage_image.render_usage_image(
             KIMI_USAGE,
             DEEPSEEK_USAGE,
@@ -61,11 +61,11 @@ class UsageImageTests(unittest.TestCase):
         )
 
         with Image.open(io.BytesIO(png)) as image:
-            self.assertEqual(image.size, (800, 600))
-            self.assertEqual(image.mode, "L")
-            self.assertEqual(image.getpixel((0, 320)), 0)
+            self.assertEqual(image.size, (400, 300))
+            self.assertEqual(image.mode, "1")
+            self.assertEqual(image.getpixel((0, 160)), 0)
 
-    def test_big_design_renders_800x600_with_black_metrics_band(self):
+    def test_big_design_renders_400x300_with_black_metrics_band(self):
         png = usage_image.render_usage_image(
             KIMI_USAGE,
             DEEPSEEK_USAGE,
@@ -81,9 +81,9 @@ class UsageImageTests(unittest.TestCase):
         )
 
         with Image.open(io.BytesIO(png)) as image:
-            self.assertEqual(image.size, (800, 600))
-            self.assertEqual(image.mode, "L")
-            self.assertEqual(image.getpixel((0, 500)), 0)
+            self.assertEqual(image.size, (400, 300))
+            self.assertEqual(image.mode, "1")
+            self.assertEqual(image.getpixel((0, 250)), 0)
 
     def test_big_design_uses_whole_number_quota_percentages(self):
         canvas = usage_image._Canvas()
@@ -111,7 +111,7 @@ class UsageImageTests(unittest.TestCase):
                 designs=duplicate_designs,
             )
 
-    def test_reset_units_are_rendered_in_lowercase(self):
+    def test_reset_units_are_rendered_in_uppercase(self):
         canvas = usage_image._Canvas()
         usage_image._draw_progress(
             canvas,
@@ -120,11 +120,11 @@ class UsageImageTests(unittest.TestCase):
             top=79,
             label="5 HOUR",
             percent=25.0,
-            reset_in="5D13H",
+            reset_in="5d13h",
         )
 
         text_values = [operation[1] for operation in canvas._text_ops]
-        self.assertIn("RESET 5d13h", text_values)
+        self.assertIn("RESET 5D13H", text_values)
 
     def test_usage_percentages_are_rounded_to_whole_numbers(self):
         self.assertEqual(usage_image._whole_number(67.5, "%"), "68%")
@@ -203,8 +203,8 @@ class UsageImageTests(unittest.TestCase):
         credit = credit_operations[0]
         self.assertEqual(credit[3], "credit")
         self.assertEqual(credit[4], usage_image._V3_CREDIT_FILL)
-        self.assertGreater(credit[0][0], 500)
-        self.assertLess(credit[0][0], 700)
+        self.assertGreater(credit[0][0], 250)
+        self.assertLess(credit[0][0], 350)
 
     def test_daily_slogan_is_stable_and_rotates_by_utc_plus_eight_day(self):
         current = datetime(
@@ -319,7 +319,7 @@ class UsageImageTests(unittest.TestCase):
             )
         )
 
-    def test_renders_800x600_grayscale_png(self):
+    def test_renders_400x300_1bit_png(self):
         png = usage_image.render_usage_image(
             KIMI_USAGE,
             DEEPSEEK_USAGE,
@@ -336,10 +336,10 @@ class UsageImageTests(unittest.TestCase):
         self.assertLess(len(png), 2 * 1024 * 1024)
         with Image.open(io.BytesIO(png)) as image:
             self.assertEqual(image.format, "PNG")
-            self.assertEqual(image.size, (800, 600))
-            self.assertEqual(image.mode, "L")
+            self.assertEqual(image.size, (400, 300))
+            self.assertEqual(image.mode, "1")
             self.assertTrue(
-                any(0 < value < 255 for _, value in image.getcolors())
+                all(value in (0, 255) for _, value in image.getcolors())
             )
 
     def test_progress_bar_matches_percentage(self):
@@ -356,8 +356,8 @@ class UsageImageTests(unittest.TestCase):
         )
 
         with Image.open(io.BytesIO(png)) as image:
-            self.assertEqual(image.getpixel((60, 264)), 0)
-            self.assertGreater(image.getpixel((200, 264)), 128)
+            self.assertEqual(image.getpixel((30, 132)), 0)
+            self.assertGreater(image.getpixel((100, 131)), 128)
 
     def test_renders_partial_data(self):
         png = usage_image.render_usage_image(
@@ -372,7 +372,7 @@ class UsageImageTests(unittest.TestCase):
         )
 
         with Image.open(io.BytesIO(png)) as image:
-            self.assertEqual(image.size, (800, 600))
+            self.assertEqual(image.size, (400, 300))
             self.assertIsNotNone(image.getbbox())
 
     def test_collect_usage_keeps_successful_provider(self):

@@ -350,7 +350,7 @@ def push_image(
     dither: bool = True,
     timeout: float = 15.0,
 ) -> dict[str, Any]:
-    """Push one 800x600 PNG to the Zectrix image endpoint."""
+    """Push one 400x300 PNG to the Zectrix image endpoint."""
 
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
@@ -471,12 +471,12 @@ def resolve_page_id(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Push the 800x600 API usage dashboard to Zectrix.",
+        description="Push the 400x300 API usage dashboard to Zectrix.",
     )
     parser.add_argument(
         "--image",
         type=Path,
-        help="Push an existing 800x600 PNG instead of generating one",
+        help="Push an existing 400x300 PNG instead of generating one",
     )
     parser.add_argument(
         "--output",

@@ -164,7 +164,7 @@ class PushUsageTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             push_usage.ZectrixPushError,
-            "must be 800x600",
+            "must be 400x300",
         ):
             push_usage.validate_image(buffer.getvalue())
 
