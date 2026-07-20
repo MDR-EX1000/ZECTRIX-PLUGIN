@@ -38,6 +38,9 @@ python3 usage_image.py
 设备原生 400x300 1-bit PNG，不经过 JPEG 或其他有损压缩，也不再上传
 800x600 图片交给服务端二次缩放。可以使用 `--output` 指定其他位置。
 
+`preview/` 目录存放三张设计的手动预览样本（V1/V2/V3），供快速查看效果，
+不参与自动轮换。
+
 Banner 左侧使用按东八区日期轮换的 AI Coding Slogan。同一天重复生成时
 保持不变，英文和中文严格隔天交替；右侧显示东八区更新时间。
 项目内置精简的 Noto Sans SC Medium 字体子集（`assets/fonts/NotoSansSC-Slogan-Medium.otf`），
