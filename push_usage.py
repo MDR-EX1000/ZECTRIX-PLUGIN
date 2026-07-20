@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -23,6 +24,7 @@ from usage_image import (
     IMAGE_WIDTH,
     UsageImageError,
     generate_usage_image,
+    resolve_design_name,
 )
 
 
@@ -32,6 +34,25 @@ ZECTRIX_DEVICE_ID_FILE = "~/.config/zectrix/device_id"
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 DEFAULT_PUSH_RETRIES = 1
 DEFAULT_PUSH_RETRY_DELAY = 5.0
+_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
+_DESIGN_TMP_FILES = {
+    "daily-grid": "tmp_v1.png",
+    "ring-gauge": "tmp_v2.png",
+    "big": "tmp_v3.png",
+}
+
+
+def _default_output_path(design: str) -> Path:
+    """Return the preview/ tmp PNG for the resolved design.
+
+    Push runs write to preview/tmp_v*.png so generated images stay out of
+    the repo root and remain separate from the committed preview samples.
+    """
+
+    moment = datetime.now(_DISPLAY_TIMEZONE)
+    resolved = resolve_design_name(design, moment)
+    filename = _DESIGN_TMP_FILES.get(resolved, "tmp.png")
+    return Path("preview") / filename
 
 
 class ZectrixPushError(RuntimeError):
@@ -483,7 +504,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Generated image path "
-            "(default: ./api_usage.png; overwritten each run)"
+            "(default: preview/tmp_v{1,2,3}.png by design; "
+            "overwritten each run)"
         ),
     )
     parser.add_argument(
@@ -614,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
                 kimi_api_key_file=args.kimi_api_key_file,
                 design=args.design,
             )
-            output_path = args.output or Path("api_usage.png")
+            output_path = args.output or _default_output_path(args.design)
 
         validate_image(image_bytes)
         if output_path is not None:

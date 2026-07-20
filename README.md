@@ -38,8 +38,12 @@ python3 usage_image.py
 设备原生 400x300 1-bit PNG，不经过 JPEG 或其他有损压缩，也不再上传
 800x600 图片交给服务端二次缩放。可以使用 `--output` 指定其他位置。
 
-`preview/` 目录存放三张设计的手动预览样本（V1/V2/V3），供快速查看效果，
-不参与自动轮换。
+`preview/` 目录存放两类文件：
+
+- `preview_v1.png` / `preview_v2.png` / `preview_v3.png`：三张设计的提交样本，
+  供快速查看效果，不参与自动轮换；
+- `tmp_v1.png` / `tmp_v2.png` / `tmp_v3.png`：实际推送时按设计生成的临时图片，
+  已被 `.gitignore` 排除，不会提交。
 
 Banner 左侧使用按东八区日期轮换的 AI Coding Slogan。同一天重复生成时
 保持不变，英文和中文严格隔天交替；右侧显示东八区更新时间。
@@ -135,14 +139,15 @@ python3 push_usage.py --design big
 # 推送已有图片
 python3 push_usage.py --image ./api_usage.png
 
-# 覆盖生成 ./api_usage.png 并校验，不连接 Zectrix
+# 生成并校验，不连接 Zectrix
 python3 push_usage.py --dry-run
 ```
 
-自动生成模式每次都会先覆盖当前目录的 `./api_usage.png`，再执行推送。
-生成器直接输出 1-bit 黑白 PNG，与 E-Ink 面板实际显示一致；`push_usage.py`
-仍保留 `--dither / --no-dither` 选项，但只影响服务端对这张 1-bit 图片的
-后期处理，通常保持默认即可。
+自动生成模式每次都会先按设计覆盖 `preview/tmp_v1.png`（V1）、
+`preview/tmp_v2.png`（V2）或 `preview/tmp_v3.png`（V3），再执行推送；
+可以用 `--output` 指定其他路径。生成器直接输出 1-bit 黑白 PNG，与 E-Ink
+面板实际显示一致；`push_usage.py` 仍保留 `--dither / --no-dither` 选项，
+但只影响服务端对这张 1-bit 图片的后期处理，通常保持默认即可。
 
 生产路由固定为：
 
@@ -153,26 +158,39 @@ big                             -> page 2
 
 因此 V3 使用 `--page-id 1` 会直接报错，避免生产任务把 V3 推到错误页面。
 
-## 定时执行
+## 常驻运行（每 10 分钟）
 
-脚本是单次运行程序，生产环境使用仓库内的 `run_usage.sh`。它会：
+脚本是单次运行程序，常驻运行通过 **cron + `run_usage.sh`** 实现，不需要
+额外的守护进程。配置步骤：
+
+1. 确认依赖已安装、Token 已按上文写入 `~/.config/zectrix/`；
+2. 先手动跑一次验证：
+
+   ```bash
+   /data/CODE/ZECTRIX/run_usage.sh --all-pages
+   ```
+
+3. `crontab -e` 加入下面这行，每 10 分钟执行一次：
+
+   ```cron
+   */10 * * * * /data/CODE/ZECTRIX/run_usage.sh --all-pages >> /data/CODE/ZECTRIX/zectrix-usage.log 2>&1
+   ```
+
+之后 cron 会每 10 分钟自动采集、生成并推送；日志追加到
+`zectrix-usage.log`。
+
+`run_usage.sh` 的行为保证：
 
 - 每次任务使用 `flock` 防止上一轮未结束时重入；
-- 生成图片后先写临时文件并校验，再原子替换 `api_usage.png`；
+- 生成图片后先写临时文件并校验，再原子替换 `preview/tmp_v*.png`；
 - 对网络错误、超时、429 和 5xx 推送失败自动重试一次，等待 5 秒；
 - 对认证类 4xx 不盲目重试；
 - 两个 Provider 都失败时保留上一张有效图片。
 
-硬件每 10 分钟刷新一次时，建议 cron 也每 10 分钟运行。若要同时维持
-page 1 的 V1/V2 日轮换和 page 2 的 V3 固定布局，使用 runner 的
-`--all-pages` 模式；它们在同一把 `flock` 锁内串行执行：
-
-```cron
-*/10 * * * * /data/CODE/ZECTRIX/run_usage.sh --all-pages >> /data/CODE/ZECTRIX/zectrix-usage.log 2>&1
-```
-
-单独运行时，runner 默认使用 `rotate` 并推送到 page 1；需要单独推送 V3
-到 page 2 时使用：
+`--all-pages` 模式在同一把 `flock` 锁内串行执行两次推送：先推 page 1
+的 `rotate`（V1/V2 按日轮换），再推 page 2 的 `big`（V3 固定布局）。
+单独运行时，runner 默认只推 page 1 的 `rotate`；需要单独推送 V3 到
+page 2 时使用：
 
 ```bash
 /data/CODE/ZECTRIX/run_usage.sh --design big
