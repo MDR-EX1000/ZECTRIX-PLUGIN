@@ -20,7 +20,6 @@ The renderer checks fonts in this order:
 2. `assets/fonts/NotoSansSC-Slogan-Medium.otf`
 3. `assets/fonts/msyh.ttc`
 4. `assets/fonts/msyhbd.ttc`
-5. `assets/fonts/NotoSansSC-Slogan-Bold.otf`
 
 The Microsoft YaHei files are intentionally not included. If a locally
 licensed copy is available, it can be placed at one of the paths above

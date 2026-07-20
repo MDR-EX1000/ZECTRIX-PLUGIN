@@ -153,7 +153,6 @@ _FONT_SLOGAN = (
     str(_FONT_ASSET_DIR / "NotoSansSC-Slogan-Medium.otf"),
     str(_FONT_ASSET_DIR / "msyh.ttc"),
     str(_FONT_ASSET_DIR / "msyhbd.ttc"),
-    str(_FONT_ASSET_DIR / "NotoSansSC-Slogan-Bold.otf"),
 )
 _FONT_CREDIT = (
     "/usr/share/fonts/truetype/lato/Lato-Semibold.ttf",

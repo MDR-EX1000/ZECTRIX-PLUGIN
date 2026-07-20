@@ -41,7 +41,7 @@ python3 usage_image.py
 Banner 左侧使用按东八区日期轮换的 AI Coding Slogan。同一天重复生成时
 保持不变，英文和中文严格隔天交替；右侧显示东八区更新时间。
 项目内置精简的 Noto Sans SC Medium 字体子集（`assets/fonts/NotoSansSC-Slogan-Medium.otf`），
-在 400x300 的 E-Ink 面板上比原先 Bold 字重更轻、更清晰。
+在 400x300 的 E-Ink 面板上比 Bold 字重更轻、更清晰。
 设置 `SLOGAN_FONT_FILE` 可以使用本机其他中文字体；本地存在 `assets/fonts/msyh.ttc`
 或 `msyhbd.ttc` 时会作为后备字体使用。
 
