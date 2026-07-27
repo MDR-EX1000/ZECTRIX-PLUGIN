@@ -178,6 +178,10 @@ systemctl --user stop zectrix-usage.timer
 # 查看下次触发时间
 systemctl --user list-timers zectrix-usage.timer
 
+# 查看定时器 / 上一轮推送的状态（确认任务是否正常运行）
+systemctl --user status zectrix-usage.timer
+systemctl --user status zectrix-usage.service
+
 # 手动触发一轮（等价于 smoke test）
 systemctl --user start zectrix-usage.service
 
