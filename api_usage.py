@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -27,6 +30,11 @@ KIMI_USER_LEVEL_MAP = {
     "LEVEL_BASIC": "Moderato",
     "LEVEL_INTERMEDIATE": "Allegretto",
 }
+DEFAULT_AGY_BIN_CANDIDATES = (
+    "~/.local/bin/agy",
+    "~/.gemini/antigravity-cli/bin/agy",
+)
+DEFAULT_AGY_PROXY = "http://127.0.0.1:7890"
 
 
 class KimiUsageError(RuntimeError):
@@ -35,6 +43,10 @@ class KimiUsageError(RuntimeError):
 
 class DeepSeekUsageError(RuntimeError):
     """Raised when DeepSeek usage information cannot be retrieved or parsed."""
+
+
+class AgyUsageError(RuntimeError):
+    """Raised when Antigravity CLI usage information cannot be retrieved or parsed."""
 
 
 def _as_number(value: Any) -> float | None:
@@ -751,5 +763,169 @@ def usage_deepseek(
                 three_day_tokens["cache_hit"],
                 three_day_tokens["cache_miss"],
             ),
+        },
+    }
+
+
+def _resolve_agy_bin(agy_bin: str | None = None) -> str:
+    """Resolve the path to the Antigravity CLI executable."""
+
+    if agy_bin is not None:
+        candidate = agy_bin.strip()
+        if not candidate:
+            raise AgyUsageError("agy binary path is empty")
+        return str(Path(candidate).expanduser())
+
+    env_bin = os.getenv("AGY_BIN", "").strip()
+    if env_bin:
+        return str(Path(env_bin).expanduser())
+
+    found = shutil.which("agy")
+    if found:
+        return found
+
+    for raw_path in DEFAULT_AGY_BIN_CANDIDATES:
+        candidate_path = Path(raw_path).expanduser()
+        if candidate_path.is_file() and os.access(candidate_path, os.X_OK):
+            return str(candidate_path)
+
+    raise AgyUsageError("agy CLI binary not found")
+
+
+def _parse_agy_bucket(
+    bucket: Mapping[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    if not isinstance(bucket, Mapping):
+        return {
+            "remaining_percent": None,
+            "used_percent": None,
+            "reset_time": None,
+            "reset_in": None,
+        }
+
+    fraction = _as_number(bucket.get("remaining_fraction"))
+    if fraction is None:
+        remaining_percent = None
+        used_percent = None
+    else:
+        bounded = max(0.0, min(1.0, fraction))
+        remaining_percent = round(bounded * 100.0, 2)
+        used_percent = round((1.0 - bounded) * 100.0, 2)
+
+    reset_time = _reset_time(bucket)
+    return {
+        "remaining_percent": remaining_percent,
+        "used_percent": used_percent,
+        "reset_time": reset_time,
+        "reset_in": _reset_in(reset_time, now),
+    }
+
+
+def usage_agy(
+    agy_bin: str | None = None,
+    *,
+    timeout: float = 25.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the current Antigravity CLI ``/usage`` quota summary."""
+
+    if timeout <= 0:
+        raise ValueError("timeout must be greater than zero")
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    current = current.astimezone(timezone.utc)
+
+    resolved_bin = _resolve_agy_bin(agy_bin)
+    env = os.environ.copy()
+    if not (env.get("https_proxy") or env.get("HTTPS_PROXY")):
+        proxy = env.get("AGY_PROXY", DEFAULT_AGY_PROXY).strip()
+        if proxy:
+            env.setdefault("http_proxy", proxy)
+            env["https_proxy"] = proxy
+
+    try:
+        completed = subprocess.run(
+            [resolved_bin, "-p", "/usage", "--output-format", "json"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AgyUsageError("agy /usage command timed out") from exc
+    except OSError as exc:
+        raise AgyUsageError(f"Failed to run agy CLI: {exc}") from exc
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise AgyUsageError(
+            f"agy /usage command failed with exit code {completed.returncode}{suffix}"
+        )
+
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise AgyUsageError("agy /usage output is not valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise AgyUsageError("agy /usage output must be a JSON object")
+
+    command = payload.get("command")
+    data = command.get("data") if isinstance(command, Mapping) else None
+    groups = data.get("groups") if isinstance(data, Mapping) else None
+    if not isinstance(groups, list):
+        raise AgyUsageError("agy /usage JSON is missing command.data.groups")
+
+    buckets_by_id: dict[str, Mapping[str, Any]] = {}
+    buckets_by_group_window: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        group_name = str(group.get("name", "")).strip().lower()
+        buckets = group.get("buckets")
+        if not isinstance(buckets, list):
+            continue
+        for bucket in buckets:
+            if not isinstance(bucket, Mapping):
+                continue
+            bucket_id = bucket.get("id")
+            if isinstance(bucket_id, str) and bucket_id:
+                buckets_by_id[bucket_id] = bucket
+            window = str(bucket.get("window", "")).strip().lower()
+            if group_name and window:
+                buckets_by_group_window[(group_name, window)] = bucket
+
+    gemini_5h = buckets_by_id.get("gemini-5h") or buckets_by_group_window.get(
+        ("gemini models", "5h")
+    )
+    gemini_week = buckets_by_id.get(
+        "gemini-weekly"
+    ) or buckets_by_group_window.get(("gemini models", "weekly"))
+    claude_5h = buckets_by_id.get("3p-5h") or buckets_by_group_window.get(
+        ("claude and gpt models", "5h")
+    )
+    claude_week = buckets_by_id.get(
+        "3p-weekly"
+    ) or buckets_by_group_window.get(("claude and gpt models", "weekly"))
+    argon_week = buckets_by_id.get(
+        "gemini-argon-wtu-weekly"
+    ) or buckets_by_group_window.get(("gemini 4 argon", "weekly"))
+
+    return {
+        "gemini": {
+            "5h": _parse_agy_bucket(gemini_5h, current),
+            "week": _parse_agy_bucket(gemini_week, current),
+        },
+        "claude_gpt": {
+            "5h": _parse_agy_bucket(claude_5h, current),
+            "week": _parse_agy_bucket(claude_week, current),
+        },
+        "argon": {
+            "week": _parse_agy_bucket(argon_week, current),
         },
     }

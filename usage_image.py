@@ -16,8 +16,10 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from PIL import Image, ImageDraw, ImageFont
 
 from api_usage import (
+    AgyUsageError,
     DeepSeekUsageError,
     KimiUsageError,
+    usage_agy,
     usage_deepseek,
     usage_kimi,
 )
@@ -87,6 +89,8 @@ _FONT_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
 _LOGO_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "logos"
 _V3_KIMI_LOGO_FILE = _LOGO_ASSET_DIR / "kimi.png"
 _V3_DEEPSEEK_LOGO_FILE = _LOGO_ASSET_DIR / "deepseek.png"
+_AGY_GEMINI_LOGO_FILE = _LOGO_ASSET_DIR / "gemini.png"
+_AGY_CLAUDE_LOGO_FILE = _LOGO_ASSET_DIR / "claude.png"
 _MONTH_NAMES = (
     "JAN",
     "FEB",
@@ -175,6 +179,7 @@ class RenderContext:
     slogan: str
     width: int = IMAGE_WIDTH
     height: int = IMAGE_HEIGHT
+    agy: Mapping[str, Any] | None = None
 
 
 class UsageDesign(Protocol):
@@ -308,11 +313,16 @@ class UsageCollection:
 
     kimi: dict[str, Any] | None = None
     deepseek: dict[str, Any] | None = None
+    agy: dict[str, Any] | None = None
     errors: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_data(self) -> bool:
-        return self.kimi is not None or self.deepseek is not None
+        return (
+            self.kimi is not None
+            or self.deepseek is not None
+            or self.agy is not None
+        )
 
 
 def _read_optional_secret_file(path: str | Path) -> str | None:
@@ -335,11 +345,14 @@ def collect_usage(
     kimi_api_key: str | None = None,
     kimi_api_key_file: str | Path = KIMI_API_KEY_FILE,
     deepseek_dashboard_token: str | None = None,
+    agy_bin: str | None = None,
 ) -> UsageCollection:
     """Collect current usage while allowing one provider to fail."""
 
-    if provider not in {"both", "kimi", "deepseek"}:
-        raise ValueError("provider must be one of: both, kimi, deepseek")
+    if provider not in {"both", "kimi", "deepseek", "agy"}:
+        raise ValueError(
+            "provider must be one of: both, kimi, deepseek, agy"
+        )
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
 
@@ -362,6 +375,12 @@ def collect_usage(
             )
         except (DeepSeekUsageError, ValueError) as exc:
             result.errors["deepseek"] = str(exc)
+
+    if provider == "agy":
+        try:
+            result.agy = usage_agy(agy_bin=agy_bin, timeout=max(timeout, 15.0))
+        except (AgyUsageError, ValueError) as exc:
+            result.errors["agy"] = str(exc)
 
     return result
 
@@ -772,7 +791,6 @@ def _draw_progress(
     percent: Any,
     reset_in: Any,
 ) -> None:
-    value = _number(percent)
     percent_text = _whole_number(percent, "%")
 
     _draw_text(
@@ -803,31 +821,15 @@ def _draw_progress(
 
     bar_top = top + 51
     bar_bottom = bar_top + 8
-    draw.outline_rect(
-        _s(left),
-        _s(bar_top),
-        _s(right),
-        _s(bar_bottom),
-        outline=0,
-        width=_s(2),
+    _draw_bar_box(
+        draw,
+        left=left,
+        top=bar_top,
+        right=right,
+        bottom=bar_bottom,
+        percent=percent,
+        fg=0,
     )
-    if value is not None:
-        bounded = max(Decimal("0"), min(Decimal("100"), value))
-        inner_left = left + 2
-        inner_right = right - 2
-        inner_top = bar_top + 2
-        inner_bottom = bar_bottom - 2
-        fill_width = round(
-            float(bounded / Decimal("100")) * (inner_right - inner_left)
-        )
-        if fill_width > 0:
-            draw.fill_rect(
-                _s(inner_left),
-                _s(inner_top),
-                _s(inner_left + fill_width),
-                _s(inner_bottom),
-                fill=0,
-            )
 
 
 def _draw_kimi(
@@ -857,7 +859,7 @@ def _draw_kimi(
     plan_text = (
         str(plan).strip().upper()
         if isinstance(plan, str) and plan.strip()
-        else "UNKNOWN"
+        else "ALLEGRETTO"
     )
     title_width = draw.text_width("KIMI", 14, "black")
     _draw_chip(
@@ -1196,7 +1198,7 @@ def _draw_v2_header(
         plan_text = (
             str(plan).strip().upper()
             if isinstance(plan, str) and plan.strip()
-            else "UNKNOWN"
+            else "ALLEGRETTO"
         )
         _draw_v2_chip(
             draw,
@@ -1522,8 +1524,9 @@ def _load_v3_logo(
     path: Path,
     *,
     silhouette: bool = False,
+    inverted: bool = False,
 ) -> Image.Image | None:
-    """Load a provider logo as an opaque white-background grayscale image."""
+    """Load a provider logo as an opaque grayscale image."""
 
     try:
         logo = Image.open(path).convert("RGBA")
@@ -1532,9 +1535,11 @@ def _load_v3_logo(
     bbox = logo.getchannel("A").getbbox()
     if bbox:
         logo = logo.crop(bbox)
-    background = Image.new("RGBA", logo.size, (255, 255, 255, 255))
-    if silhouette:
-        ink = Image.new("RGBA", logo.size, (0, 0, 0, 255))
+    bg_color = (0, 0, 0, 255) if inverted else (255, 255, 255, 255)
+    fg_color = (255, 255, 255, 255) if inverted else (0, 0, 0, 255)
+    background = Image.new("RGBA", logo.size, bg_color)
+    if silhouette or inverted:
+        ink = Image.new("RGBA", logo.size, fg_color)
         logo = Image.composite(ink, background, logo.getchannel("A"))
     else:
         logo = Image.alpha_composite(background, logo)
@@ -1727,7 +1732,7 @@ def _draw_v3_kimi(
     plan_text = (
         str(plan).strip().upper()
         if isinstance(plan, str) and plan.strip()
-        else "UNKNOWN"
+        else "ALLEGRETTO"
     )
     _draw_v2_chip(
         draw,
@@ -2028,6 +2033,364 @@ def _render_daily_grid(context: RenderContext) -> bytes:
     return output.getvalue()
 
 
+def _draw_bar_box(
+    draw: _Canvas,
+    *,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    percent: Any,
+    fg: int = 0,
+) -> None:
+    draw.outline_rect(
+        _s(left),
+        _s(top),
+        _s(right),
+        _s(bottom),
+        outline=fg,
+        width=_s(2),
+    )
+    value = _number(percent)
+    if value is None:
+        return
+    bounded = max(Decimal("0"), min(Decimal("100"), value))
+    inner_left = left + 2
+    inner_right = right - 2
+    inner_top = top + 2
+    inner_bottom = bottom - 2
+    fill_width = round(
+        float(bounded / Decimal("100")) * (inner_right - inner_left)
+    )
+    if fill_width > 0:
+        draw.fill_rect(
+            _s(inner_left),
+            _s(inner_top),
+            _s(inner_left + fill_width),
+            _s(inner_bottom),
+            fill=fg,
+        )
+
+
+def _draw_agy_section_header(
+    draw: _Canvas,
+    *,
+    logo: Image.Image | None,
+    title: str,
+    title_size: int,
+    chip_text: str | None = None,
+    chip_size: int = 9,
+    chip_pad_x: int = 6,
+    chip_pad_y: int = 3,
+    chip_right: float | None = None,
+    right_label: str | None = None,
+    top: int,
+    fg: int = 0,
+) -> None:
+    title_mid = _v3_cap_middle(
+        draw,
+        title,
+        top=top,
+        size=title_size,
+        weight="black",
+    )
+    x = 14.0
+    if logo is not None:
+        logo_size = title_size + 1
+        _paste_v3_logo(draw, logo, x=x, middle=title_mid, size=logo_size)
+        x += logo_size + 5
+    _draw_text(
+        draw,
+        (x, top),
+        title,
+        size=title_size,
+        weight="black",
+        fill=fg,
+    )
+    if chip_text:
+        chip_left = x + draw.text_width(title, title_size, "black") + 6
+        if fg == 0:
+            if chip_right is not None:
+                _draw_v2_chip(
+                    draw,
+                    text=chip_text,
+                    right=chip_right,
+                    middle=title_mid,
+                    size=chip_size,
+                    pad_x=chip_pad_x,
+                    pad_y=chip_pad_y,
+                )
+            else:
+                _draw_v2_chip(
+                    draw,
+                    text=chip_text,
+                    left=chip_left,
+                    middle=title_mid,
+                    size=chip_size,
+                    pad_x=chip_pad_x,
+                    pad_y=chip_pad_y,
+                )
+        else:
+            _draw_v3_light_chip(
+                draw,
+                text=chip_text,
+                left=chip_left,
+                middle=title_mid,
+                size=chip_size,
+                pad_x=chip_pad_x,
+                pad_y=chip_pad_y,
+            )
+    if right_label:
+        draw.cap_centered_text(
+            (386, title_mid),
+            right_label,
+            size=9,
+            weight="bold",
+            fill=fg,
+            anchor="rm",
+        )
+
+
+def _draw_agy_claude_metric(
+    draw: _Canvas,
+    *,
+    left: int,
+    right: int,
+    top: int,
+    label: str,
+    percent: Any,
+    reset_in: Any,
+) -> None:
+    _draw_text(
+        draw,
+        (left, top),
+        label,
+        size=10,
+        weight="bold",
+    )
+    _fit_text(
+        draw,
+        (right, top + 1),
+        f"RESET {_format_reset_in(reset_in)}",
+        max_width=92,
+        size=9,
+        minimum_size=8,
+        weight="bold",
+        anchor="ra",
+    )
+    pct_text = _whole_number(percent, "%")
+    _draw_text(
+        draw,
+        (left, top + 15),
+        pct_text,
+        size=18,
+        weight="black",
+    )
+    bar_left = left + 56
+    _draw_bar_box(
+        draw,
+        left=bar_left,
+        top=top + 21,
+        right=right,
+        bottom=top + 30,
+        percent=percent,
+        fg=0,
+    )
+
+
+def _render_agy(context: RenderContext) -> bytes:
+    """Render Antigravity CLI /usage quotas across Gemini, Claude/GPT, and Argon."""
+
+    current = context.updated_at
+    draw = _Canvas(context.width, context.height)
+
+    # Top black banner (same style as daily-grid)
+    draw.fill_rect(0, 0, _s(_LOGICAL_WIDTH), _s(_BANNER_HEIGHT), fill=0)
+    _fit_cap_centered_text(
+        draw,
+        (14, _BANNER_HEIGHT / 2),
+        context.slogan,
+        max_width=282,
+        size=_SLOGAN_SIZE,
+        minimum_size=_SLOGAN_MINIMUM_SIZE,
+        weight=_slogan_weight(context.slogan),
+        fill=255,
+        anchor="lm",
+    )
+    timestamp = (
+        f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
+        f"{current.hour:02d}\u2009:\u2009{current.minute:02d}"
+    )
+    draw.cap_centered_text(
+        (386, _BANNER_HEIGHT / 2),
+        timestamp,
+        size=10,
+        weight="bold",
+        fill=255,
+        anchor="rm",
+    )
+
+    usage = context.agy
+    if not isinstance(usage, Mapping):
+        _draw_text(
+            draw,
+            (_LOGICAL_WIDTH / 2, 166),
+            "UNAVAILABLE",
+            size=16,
+            weight="black",
+            anchor="mm",
+        )
+        flattened = draw.finalize()
+        output = io.BytesIO()
+        flattened.save(output, format="PNG", optimize=True)
+        return output.getvalue()
+
+    gemini_logo = _load_v3_logo(_AGY_GEMINI_LOGO_FILE, silhouette=True)
+    claude_logo = _load_v3_logo(_AGY_CLAUDE_LOGO_FILE, silhouette=True)
+    argon_logo = _load_v3_logo(_AGY_GEMINI_LOGO_FILE, inverted=True)
+
+    # Tier 1: Gemini Models (5H + WEEK)
+    gemini = usage.get("gemini") if isinstance(usage.get("gemini"), Mapping) else {}
+    _draw_agy_section_header(
+        draw,
+        logo=gemini_logo,
+        title="GEMINI 4",
+        title_size=13,
+        chip_text="HYDROGEN",
+        chip_size=13,
+        chip_pad_x=6,
+        chip_pad_y=3,
+        chip_right=386,
+        right_label=None,
+        top=40,
+        fg=0,
+    )
+    _draw_progress(
+        draw,
+        left=14,
+        right=190,
+        top=62,
+        label="5 HOUR",
+        percent=_nested(gemini, "5h", "remaining_percent"),
+        reset_in=_nested(gemini, "5h", "reset_in"),
+    )
+    _draw_progress(
+        draw,
+        left=210,
+        right=386,
+        top=62,
+        label="WEEK",
+        percent=_nested(gemini, "week", "remaining_percent"),
+        reset_in=_nested(gemini, "week", "reset_in"),
+    )
+
+    draw.line(
+        (_s(14), _s(136), _s(386), _s(136)),
+        fill=0,
+        width=_s(2),
+    )
+
+    # Tier 2: Claude and GPT models (5H + WEEK)
+    claude_gpt = (
+        usage.get("claude_gpt")
+        if isinstance(usage.get("claude_gpt"), Mapping)
+        else {}
+    )
+    _draw_agy_section_header(
+        draw,
+        logo=claude_logo,
+        title="CLAUDE",
+        title_size=13,
+        chip_text="OPUS · SONNET",
+        chip_size=13,
+        chip_pad_x=6,
+        chip_pad_y=3,
+        chip_right=386,
+        right_label=None,
+        top=144,
+        fg=0,
+    )
+    _draw_agy_claude_metric(
+        draw,
+        left=14,
+        right=190,
+        top=168,
+        label="5 HOUR",
+        percent=_nested(claude_gpt, "5h", "remaining_percent"),
+        reset_in=_nested(claude_gpt, "5h", "reset_in"),
+    )
+    _draw_agy_claude_metric(
+        draw,
+        left=210,
+        right=386,
+        top=168,
+        label="WEEK",
+        percent=_nested(claude_gpt, "week", "remaining_percent"),
+        reset_in=_nested(claude_gpt, "week", "reset_in"),
+    )
+
+    # Tier 3: Gemini 4 Argon (solid black band, white foreground)
+    argon = usage.get("argon") if isinstance(usage.get("argon"), Mapping) else {}
+    draw.fill_rect(0, _s(214), _s(_LOGICAL_WIDTH), _s(_LOGICAL_HEIGHT), fill=0)
+    _draw_agy_section_header(
+        draw,
+        logo=argon_logo,
+        title="GEMINI 4 ARGON",
+        title_size=11,
+        chip_text=None,
+        right_label="WEEKLY LIMIT",
+        top=222,
+        fg=255,
+    )
+
+    argon_remaining = _nested(argon, "week", "remaining_percent")
+    argon_used = _nested(argon, "week", "used_percent")
+    argon_reset = _nested(argon, "week", "reset_in")
+    pct_text = _whole_number(argon_remaining, "%")
+    _draw_text(
+        draw,
+        (14, 245),
+        pct_text,
+        size=28,
+        weight="black",
+        fill=255,
+    )
+    pct_width = draw.text_width(pct_text, 28, "black")
+
+    bar_left = max(106, round(14 + pct_width + 18))
+    _draw_text(
+        draw,
+        (bar_left, 249),
+        f"RESET {_format_reset_in(argon_reset)}",
+        size=10,
+        weight="bold",
+        fill=255,
+    )
+    _draw_text(
+        draw,
+        (386, 249),
+        f"USED {_one_decimal(argon_used, '%')}",
+        size=10,
+        weight="bold",
+        fill=255,
+        anchor="ra",
+    )
+    _draw_bar_box(
+        draw,
+        left=bar_left,
+        top=266,
+        right=386,
+        bottom=276,
+        percent=argon_remaining,
+        fg=255,
+    )
+
+    flattened = draw.finalize()
+    output = io.BytesIO()
+    flattened.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
 register_design(
     "daily-grid",
     _render_daily_grid,
@@ -2044,12 +2407,19 @@ register_design(
     description="Version 3 dominant weekly quota with a black metrics band",
     auto_rotate=False,
 )
+register_design(
+    "agy",
+    _render_agy,
+    description="Antigravity CLI quota dashboard for Gemini, Claude/GPT, and Argon",
+    auto_rotate=False,
+)
 
 
 def render_usage_image(
     kimi_usage: Mapping[str, Any] | None,
     deepseek_usage: Mapping[str, Any] | None,
     *,
+    agy_usage: Mapping[str, Any] | None = None,
     updated_at: datetime | None = None,
     design: str = "rotate",
 ) -> bytes:
@@ -2068,6 +2438,7 @@ def render_usage_image(
     context = RenderContext(
         kimi=kimi_usage,
         deepseek=deepseek_usage,
+        agy=agy_usage,
         updated_at=current,
         slogan=daily_slogan(current),
     )
@@ -2081,17 +2452,27 @@ def generate_usage_image(
     kimi_api_key: str | None = None,
     kimi_api_key_file: str | Path = KIMI_API_KEY_FILE,
     deepseek_dashboard_token: str | None = None,
+    agy_bin: str | None = None,
     updated_at: datetime | None = None,
     design: str = "rotate",
 ) -> tuple[bytes, UsageCollection]:
     """Collect current usage and return its rendered PNG and source status."""
 
+    current = updated_at or datetime.now(_DISPLAY_TIMEZONE)
+    if current.tzinfo is None:
+        raise ValueError("updated_at must be timezone-aware")
+    resolved_design = resolve_design_name(design, current.astimezone(_DISPLAY_TIMEZONE))
+    effective_provider = (
+        "agy" if resolved_design == "agy" and provider == "both" else provider
+    )
+
     collection = collect_usage(
-        provider,
+        effective_provider,
         timeout=timeout,
         kimi_api_key=kimi_api_key,
         kimi_api_key_file=kimi_api_key_file,
         deepseek_dashboard_token=deepseek_dashboard_token,
+        agy_bin=agy_bin,
     )
     if not collection.has_data:
         details = "; ".join(
@@ -2105,6 +2486,7 @@ def generate_usage_image(
     image = render_usage_image(
         collection.kimi,
         collection.deepseek,
+        agy_usage=collection.agy,
         updated_at=updated_at,
         design=design,
     )
@@ -2113,7 +2495,7 @@ def generate_usage_image(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Render Kimi and DeepSeek usage as a 400x300 PNG.",
+        description="Render Kimi, DeepSeek, or AGY usage as a 400x300 PNG.",
     )
     parser.add_argument(
         "--design",
@@ -2136,7 +2518,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=("both", "kimi", "deepseek"),
+        choices=("both", "kimi", "deepseek", "agy"),
         default="both",
         help="Usage provider to query (default: both)",
     )

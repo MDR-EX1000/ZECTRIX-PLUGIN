@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -263,6 +265,108 @@ class DeepSeekUsageTests(unittest.TestCase):
                 dashboard_token="dashboard-token",
                 now=datetime(2026, 7, 17),
             )
+
+
+class AgyUsageTests(unittest.TestCase):
+    def test_parses_agy_json_buckets(self):
+        sample_payload = {
+            "status": "SUCCESS",
+            "command": {
+                "name": "usage",
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Gemini Models",
+                            "buckets": [
+                                {
+                                    "id": "gemini-weekly",
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.9671,
+                                    "reset_time": "2026-11-24T10:20:57Z",
+                                },
+                                {
+                                    "id": "gemini-5h",
+                                    "window": "5h",
+                                    "remaining_fraction": 0.9037,
+                                    "reset_time": "2026-11-17T15:20:57Z",
+                                },
+                            ],
+                        },
+                        {
+                            "name": "Claude and GPT models",
+                            "buckets": [
+                                {
+                                    "id": "3p-weekly",
+                                    "window": "weekly",
+                                    "remaining_fraction": 1,
+                                    "reset_time": "2026-11-24T11:46:43Z",
+                                },
+                                {
+                                    "id": "3p-5h",
+                                    "window": "5h",
+                                    "remaining_fraction": 1,
+                                    "reset_time": "2026-11-17T16:46:43Z",
+                                },
+                            ],
+                        },
+                        {
+                            "name": "Gemini 4 Argon",
+                            "buckets": [
+                                {
+                                    "id": "gemini-argon-wtu-weekly",
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.9891,
+                                    "reset_time": "2026-11-24T11:18:20Z",
+                                }
+                            ],
+                        },
+                    ]
+                },
+            },
+        }
+        completed = subprocess.CompletedProcess(
+            args=["agy", "-p", "/usage", "--output-format", "json"],
+            returncode=0,
+            stdout=json.dumps(sample_payload),
+            stderr="",
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("api_usage.subprocess.run", return_value=completed) as run_mock,
+        ):
+            result = api_usage.usage_agy(
+                agy_bin="/usr/local/bin/agy",
+                now=datetime(2026, 11, 17, 11, 46, 0, tzinfo=timezone.utc),
+            )
+
+        run_mock.assert_called_once()
+        kwargs = run_mock.call_args.kwargs
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["env"]["https_proxy"], api_usage.DEFAULT_AGY_PROXY)
+        self.assertEqual(kwargs["env"]["http_proxy"], api_usage.DEFAULT_AGY_PROXY)
+        self.assertEqual(result["gemini"]["5h"]["remaining_percent"], 90.37)
+        self.assertEqual(result["gemini"]["5h"]["used_percent"], 9.63)
+        self.assertEqual(result["gemini"]["5h"]["reset_in"], "4h")
+        self.assertEqual(result["gemini"]["week"]["remaining_percent"], 96.71)
+        self.assertEqual(result["gemini"]["week"]["reset_in"], "6d23h")
+        self.assertEqual(result["claude_gpt"]["5h"]["remaining_percent"], 100.0)
+        self.assertEqual(result["claude_gpt"]["week"]["remaining_percent"], 100.0)
+        self.assertEqual(result["argon"]["week"]["remaining_percent"], 98.91)
+        self.assertEqual(result["argon"]["week"]["used_percent"], 1.09)
+
+    def test_raises_when_agy_command_fails(self):
+        failed = subprocess.CompletedProcess(
+            args=["agy"],
+            returncode=1,
+            stdout="",
+            stderr="auth expired",
+        )
+        with patch("api_usage.subprocess.run", return_value=failed):
+            with self.assertRaisesRegex(
+                api_usage.AgyUsageError,
+                "exit code 1: auth expired",
+            ):
+                api_usage.usage_agy(agy_bin="/usr/local/bin/agy")
 
 
 if __name__ == "__main__":

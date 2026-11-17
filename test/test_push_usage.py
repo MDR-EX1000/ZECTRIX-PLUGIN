@@ -264,10 +264,16 @@ class PushUsageTests(unittest.TestCase):
             push_usage.resolve_page_id("big"),
             "2",
         )
+        self.assertEqual(
+            push_usage.resolve_page_id("agy"),
+            "3",
+        )
         with self.assertRaisesRegex(ValueError, "fixed to page 2"):
             push_usage.resolve_page_id("big", "1")
         with self.assertRaisesRegex(ValueError, "fixed to page 1"):
             push_usage.resolve_page_id("rotate", "2")
+        with self.assertRaisesRegex(ValueError, "fixed to page 3"):
+            push_usage.resolve_page_id("agy", "1")
 
 
 if __name__ == "__main__":

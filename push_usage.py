@@ -39,6 +39,7 @@ _DESIGN_TMP_FILES = {
     "daily-grid": "tmp_v1.png",
     "ring-gauge": "tmp_v2.png",
     "big": "tmp_v3.png",
+    "agy": "tmp_v4.png",
 }
 
 
@@ -472,6 +473,7 @@ def resolve_page_id(
         "daily-grid": "1",
         "ring-gauge": "1",
         "big": "2",
+        "agy": "3",
     }.get(normalized)
     if fixed_page is not None:
         if (
@@ -520,7 +522,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=("both", "kimi", "deepseek"),
+        choices=("both", "kimi", "deepseek", "agy"),
         default="both",
         help="Usage provider to query when generating (default: both)",
     )
@@ -572,7 +574,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("1", "2", "3", "4", "5"),
         help=(
             "Persistent page number; rotate/V1/V2 are fixed to page 1, "
-            "V3 big is fixed to page 2"
+            "V3 big is fixed to page 2, agy is fixed to page 3"
         ),
     )
     dither_group = parser.add_mutually_exclusive_group()
@@ -683,12 +685,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    pushed_pages = result.get("pushedPages", "?")
-    total_pages = result.get("totalPages", "?")
     pushed_page_id = result.get("pageId", page_id)
     print(
-        f"Pushed {pushed_pages}/{total_pages} page(s) "
-        f"to {device_id} as page {pushed_page_id}"
+        f"Pushed to {device_id} as page {pushed_page_id}"
     )
     return 0
 

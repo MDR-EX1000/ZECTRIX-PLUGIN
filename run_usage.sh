@@ -19,12 +19,14 @@ if [[ "${1:-}" == "--all-pages" ]]; then
     exec "$FLOCK_BIN" -n "$LOCK_FILE" /bin/bash -c '
         root_dir="$1"
         shift
-        /usr/bin/python3 "$root_dir/push_usage.py" \
+        "$root_dir/venv/bin/python3" "$root_dir/push_usage.py" \
             --design rotate "$@"
-        /usr/bin/python3 "$root_dir/push_usage.py" \
+        "$root_dir/venv/bin/python3" "$root_dir/push_usage.py" \
             --design big "$@"
+        "$root_dir/venv/bin/python3" "$root_dir/push_usage.py" \
+            --design agy "$@"
     ' zectrix-usage-runner "$ROOT_DIR" "$@"
 fi
 
 exec "$FLOCK_BIN" -n "$LOCK_FILE" \
-    /usr/bin/python3 "$ROOT_DIR/push_usage.py" "$@"
+    "$ROOT_DIR/venv/bin/python3" "$ROOT_DIR/push_usage.py" "$@"

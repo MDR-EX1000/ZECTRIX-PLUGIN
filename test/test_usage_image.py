@@ -37,12 +37,51 @@ DEEPSEEK_USAGE = {
     },
 }
 
+AGY_USAGE = {
+    "gemini": {
+        "5h": {
+            "remaining_percent": 90.37,
+            "used_percent": 9.63,
+            "reset_time": "2026-11-17T15:20:57Z",
+            "reset_in": "4h",
+        },
+        "week": {
+            "remaining_percent": 96.71,
+            "used_percent": 3.29,
+            "reset_time": "2026-11-24T10:20:57Z",
+            "reset_in": "6d23h",
+        },
+    },
+    "claude_gpt": {
+        "5h": {
+            "remaining_percent": 100.0,
+            "used_percent": 0.0,
+            "reset_time": "2026-11-17T16:46:43Z",
+            "reset_in": "5h",
+        },
+        "week": {
+            "remaining_percent": 100.0,
+            "used_percent": 0.0,
+            "reset_time": "2026-11-24T11:46:43Z",
+            "reset_in": "7d0h",
+        },
+    },
+    "argon": {
+        "week": {
+            "remaining_percent": 98.91,
+            "used_percent": 1.09,
+            "reset_time": "2026-11-24T11:18:20Z",
+            "reset_in": "6d23h",
+        },
+    },
+}
+
 
 class UsageImageTests(unittest.TestCase):
     def test_lists_the_registered_default_design(self):
         self.assertEqual(
             [design.name for design in usage_image.list_designs()],
-            ["daily-grid", "ring-gauge", "big"],
+            ["daily-grid", "ring-gauge", "big", "agy"],
         )
 
     def test_ring_gauge_design_renders_400x300(self):
@@ -424,6 +463,37 @@ class UsageImageTests(unittest.TestCase):
                 DEEPSEEK_USAGE,
                 updated_at=datetime(2026, 7, 17),
             )
+
+    def test_agy_design_renders_400x300_with_all_groups(self):
+        png = usage_image.render_usage_image(
+            None,
+            None,
+            agy_usage=AGY_USAGE,
+            updated_at=datetime(
+                2026,
+                11,
+                17,
+                11,
+                46,
+                tzinfo=timezone.utc,
+            ),
+            design="agy",
+        )
+
+        with Image.open(io.BytesIO(png)) as image:
+            self.assertEqual(image.size, (400, 300))
+            self.assertEqual(image.mode, "1")
+            self.assertEqual(image.getpixel((0, 250)), 0)
+
+    def test_generate_agy_design_auto_selects_agy_provider(self):
+        with patch("usage_image.usage_agy", return_value=AGY_USAGE) as mocked_agy:
+            png, collection = usage_image.generate_usage_image(design="agy")
+
+        mocked_agy.assert_called_once()
+        self.assertEqual(collection.agy, AGY_USAGE)
+        with Image.open(io.BytesIO(png)) as image:
+            self.assertEqual(image.size, (400, 300))
+            self.assertEqual(image.mode, "1")
 
 
 if __name__ == "__main__":
