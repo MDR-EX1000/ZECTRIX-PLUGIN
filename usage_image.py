@@ -2349,7 +2349,6 @@ def _render_agy(context: RenderContext) -> bytes:
     )
 
     argon_remaining = _nested(argon, "week", "remaining_percent")
-    argon_used = _nested(argon, "week", "used_percent")
     argon_reset = _nested(argon, "week", "reset_in")
     pct_text = _whole_number(argon_remaining, "%")
     _draw_text(
@@ -2365,16 +2364,8 @@ def _render_agy(context: RenderContext) -> bytes:
     bar_left = max(110, round(14 + pct_width + 18))
     _draw_text(
         draw,
-        (bar_left, 246),
-        f"RESET {_format_reset_in(argon_reset)}",
-        size=11,
-        weight="bold",
-        fill=255,
-    )
-    _draw_text(
-        draw,
         (386, 246),
-        f"USED {_one_decimal(argon_used, '%')}",
+        f"RESET {_format_reset_in(argon_reset)}",
         size=11,
         weight="bold",
         fill=255,
