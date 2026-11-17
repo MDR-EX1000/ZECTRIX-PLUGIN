@@ -2084,6 +2084,7 @@ def _draw_agy_section_header(
     chip_pad_y: int = 3,
     chip_right: float | None = None,
     right_label: str | None = None,
+    right_label_size: int = 10,
     top: int,
     fg: int = 0,
 ) -> None:
@@ -2144,7 +2145,7 @@ def _draw_agy_section_header(
         draw.cap_centered_text(
             (386, title_mid),
             right_label,
-            size=9,
+            size=right_label_size,
             weight="bold",
             fill=fg,
             anchor="rm",
@@ -2262,14 +2263,14 @@ def _render_agy(context: RenderContext) -> bytes:
         chip_pad_y=2,
         chip_right=386,
         right_label=None,
-        top=40,
+        top=38,
         fg=0,
     )
     _draw_progress(
         draw,
         left=14,
         right=190,
-        top=62,
+        top=58,
         label="5 HOUR",
         percent=_nested(gemini, "5h", "remaining_percent"),
         reset_in=_nested(gemini, "5h", "reset_in"),
@@ -2278,14 +2279,14 @@ def _render_agy(context: RenderContext) -> bytes:
         draw,
         left=210,
         right=386,
-        top=62,
+        top=58,
         label="WEEK",
         percent=_nested(gemini, "week", "remaining_percent"),
         reset_in=_nested(gemini, "week", "reset_in"),
     )
 
     draw.line(
-        (_s(14), _s(136), _s(386), _s(136)),
+        (_s(14), _s(128), _s(386), _s(128)),
         fill=0,
         width=_s(2),
     )
@@ -2307,14 +2308,14 @@ def _render_agy(context: RenderContext) -> bytes:
         chip_pad_y=2,
         chip_right=386,
         right_label=None,
-        top=144,
+        top=136,
         fg=0,
     )
     _draw_agy_claude_metric(
         draw,
         left=14,
         right=190,
-        top=168,
+        top=160,
         label="5 HOUR",
         percent=_nested(claude_gpt, "5h", "remaining_percent"),
         reset_in=_nested(claude_gpt, "5h", "reset_in"),
@@ -2323,7 +2324,7 @@ def _render_agy(context: RenderContext) -> bytes:
         draw,
         left=210,
         right=386,
-        top=168,
+        top=160,
         label="WEEK",
         percent=_nested(claude_gpt, "week", "remaining_percent"),
         reset_in=_nested(claude_gpt, "week", "reset_in"),
@@ -2331,18 +2332,19 @@ def _render_agy(context: RenderContext) -> bytes:
 
     # Tier 3: Gemini 4 Argon (solid black band, white foreground)
     argon = usage.get("argon") if isinstance(usage.get("argon"), Mapping) else {}
-    draw.fill_rect(0, _s(214), _s(_LOGICAL_WIDTH), _s(_LOGICAL_HEIGHT), fill=0)
+    draw.fill_rect(0, _s(204), _s(_LOGICAL_WIDTH), _s(_LOGICAL_HEIGHT), fill=0)
     _draw_agy_section_header(
         draw,
         logo=argon_logo,
         title="GEMINI 4",
-        title_size=12,
+        title_size=14,
         chip_text="ARGON",
-        chip_size=10,
-        chip_pad_x=5,
+        chip_size=12,
+        chip_pad_x=6,
         chip_pad_y=2,
         right_label="WEEKLY LIMIT",
-        top=222,
+        right_label_size=10,
+        top=213,
         fg=255,
     )
 
@@ -2352,28 +2354,28 @@ def _render_agy(context: RenderContext) -> bytes:
     pct_text = _whole_number(argon_remaining, "%")
     _draw_text(
         draw,
-        (14, 245),
+        (14, 242),
         pct_text,
-        size=28,
+        size=30,
         weight="black",
         fill=255,
     )
-    pct_width = draw.text_width(pct_text, 28, "black")
+    pct_width = draw.text_width(pct_text, 30, "black")
 
-    bar_left = max(106, round(14 + pct_width + 18))
+    bar_left = max(110, round(14 + pct_width + 18))
     _draw_text(
         draw,
-        (bar_left, 249),
+        (bar_left, 246),
         f"RESET {_format_reset_in(argon_reset)}",
-        size=10,
+        size=11,
         weight="bold",
         fill=255,
     )
     _draw_text(
         draw,
-        (386, 249),
+        (386, 246),
         f"USED {_one_decimal(argon_used, '%')}",
-        size=10,
+        size=11,
         weight="bold",
         fill=255,
         anchor="ra",
