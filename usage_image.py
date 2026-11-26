@@ -1579,6 +1579,41 @@ def _v3_cap_middle(
     return top + (box[1] + box[3]) / 2 / _LAYOUT_SCALE
 
 
+_AGY_GEMINI_LOGO_PX = 21
+
+
+def _render_gemini_star(px: int, *, inverted: bool = False) -> Image.Image:
+    """Pixel-exact four-point Gemini sparkle with 1px spikes.
+
+    Sampled straight at the target pixel grid (|x|^p + |y|^p <= 1, p=0.5 for
+    deeply concave sides) and kept at 0/255 so the later resize/threshold
+    cannot round the spikes off into a diamond.
+    """
+
+    ss, p, coverage = 8, 0.5, 60
+    big = px * ss
+    c = big / 2
+    mask = Image.new("L", (big, big), 0)
+    pixels = mask.load()
+    for y in range(big):
+        for x in range(big):
+            dx = abs((x + 0.5 - c) / c)
+            dy = abs((y + 0.5 - c) / c)
+            if dx**p + dy**p <= 1:
+                pixels[x, y] = 255
+    cells = mask.resize((px, px), Image.Resampling.BOX)
+    cells = cells.point(lambda v: 255 if v >= coverage else 0)
+    # Nearest-upscale by an integer factor so the later LANCZOS resize back to
+    # ``px`` lands exactly on the pixel grid.
+    cells = cells.resize((px * 10, px * 10), Image.Resampling.NEAREST)
+    ink, paper = (255, 0) if inverted else (0, 255)
+    return Image.composite(
+        Image.new("L", cells.size, ink),
+        Image.new("L", cells.size, paper),
+        cells,
+    )
+
+
 def _render_agy_logo(kind: str, *, inverted: bool = False) -> Image.Image:
     """Draw a chunky Gemini/Claude mark that survives 1-bit downscaling.
 
@@ -1587,41 +1622,29 @@ def _render_agy_logo(kind: str, *, inverted: bool = False) -> Image.Image:
     procedurally with strokes thick enough for the 1-bit panel.
     """
 
+    if kind == "gemini":
+        return _render_gemini_star(_AGY_GEMINI_LOGO_PX, inverted=inverted)
+
     size = 256
-    ss = 4  # supersample for smooth edges before the downscale
-    big = size * ss
+    big = size * 4  # supersample for smooth edges before the downscale
     mask = Image.new("L", (big, big), 0)
     draw = ImageDraw.Draw(mask)
     c = big / 2
-    if kind == "gemini":
-        # Four-point star: |x|^p + |y|^p = 1 with p<1 gives concave sides.
-        p = 0.6
-        r = big * 0.5
-        points = []
-        steps = 720
-        for i in range(steps):
-            t = 2 * math.pi * i / steps
-            cx_, sy_ = math.cos(t), math.sin(t)
-            x = math.copysign(abs(cx_) ** (2 / p), cx_)
-            y = math.copysign(abs(sy_) ** (2 / p), sy_)
-            points.append((c + x * r, c + y * r))
-        draw.polygon(points, fill=255)
-    else:
-        # Claude spark: 8 thick rays of alternating length around a hub.
-        rays = 8
-        width = big * 0.15
-        for i in range(rays):
-            angle = 2 * math.pi * i / rays - math.pi / 2
-            length = big * (0.5 if i % 2 == 0 else 0.42)
-            ex = c + math.cos(angle) * (length - width / 2)
-            ey = c + math.sin(angle) * (length - width / 2)
-            draw.line((c, c, ex, ey), fill=255, width=round(width))
-            draw.ellipse(
-                (ex - width / 2, ey - width / 2, ex + width / 2, ey + width / 2),
-                fill=255,
-            )
-        hub = big * 0.14
-        draw.ellipse((c - hub, c - hub, c + hub, c + hub), fill=255)
+    # Claude spark: 8 thick rays of alternating length around a hub.
+    rays = 8
+    width = big * 0.15
+    for i in range(rays):
+        angle = 2 * math.pi * i / rays - math.pi / 2
+        length = big * (0.5 if i % 2 == 0 else 0.42)
+        ex = c + math.cos(angle) * (length - width / 2)
+        ey = c + math.sin(angle) * (length - width / 2)
+        draw.line((c, c, ex, ey), fill=255, width=round(width))
+        draw.ellipse(
+            (ex - width / 2, ey - width / 2, ex + width / 2, ey + width / 2),
+            fill=255,
+        )
+    hub = big * 0.14
+    draw.ellipse((c - hub, c - hub, c + hub, c + hub), fill=255)
     mask = mask.resize((size, size), Image.Resampling.LANCZOS)
     ink, paper = (255, 0) if inverted else (0, 255)
     return Image.composite(
@@ -2218,7 +2241,7 @@ def _draw_agy_section_header(
     )
     x = 14.0
     if logo is not None:
-        logo_size = title_size + (5 if fg == 0 else 3)
+        logo_size = title_size + (_AGY_GEMINI_LOGO_PX - 14 if fg == 0 else 3)
         _paste_v3_logo(draw, logo, x=x, middle=title_mid, size=logo_size)
         x += logo_size + 5
     _draw_text(
