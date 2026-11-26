@@ -1,8 +1,10 @@
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -56,8 +58,13 @@ class CompactTokensTests(unittest.TestCase):
 class KimiUsageTests(unittest.TestCase):
     def test_maps_intermediate_level_to_allegretto(self):
         payload = {
-            "limits": [],
-            "usage": {},
+            "limits": [
+                {
+                    "window": {"duration": 5, "timeUnit": "HOUR"},
+                    "detail": {"limit": 100, "used": 15},
+                }
+            ],
+            "usage": {"limit": 1000, "remaining": 825},
             "user": {
                 "membership": {
                     "level": "LEVEL_INTERMEDIATE",
@@ -72,6 +79,10 @@ class KimiUsageTests(unittest.TestCase):
             result = api_usage.usage_kimi(api_key="kimi-key")
 
         self.assertEqual(result["user_level"], "Allegretto")
+        self.assertEqual(result["5h"]["remaining_percent"], 85.0)
+        self.assertEqual(result["5h"]["used_percent"], 15.0)
+        self.assertEqual(result["week"]["remaining_percent"], 82.5)
+        self.assertEqual(result["week"]["used_percent"], 17.5)
 
 
 class DeepSeekUsageTests(unittest.TestCase):
@@ -298,7 +309,7 @@ class AgyUsageTests(unittest.TestCase):
                                 {
                                     "id": "3p-weekly",
                                     "window": "weekly",
-                                    "remaining_fraction": 1,
+                                    "remaining_fraction": 0.921,
                                     "reset_time": "2026-11-24T11:46:43Z",
                                 },
                                 {
@@ -307,17 +318,6 @@ class AgyUsageTests(unittest.TestCase):
                                     "remaining_fraction": 1,
                                     "reset_time": "2026-11-17T16:46:43Z",
                                 },
-                            ],
-                        },
-                        {
-                            "name": "Gemini 4 Argon",
-                            "buckets": [
-                                {
-                                    "id": "gemini-argon-wtu-weekly",
-                                    "window": "weekly",
-                                    "remaining_fraction": 0.9891,
-                                    "reset_time": "2026-11-24T11:18:20Z",
-                                }
                             ],
                         },
                     ]
@@ -332,6 +332,7 @@ class AgyUsageTests(unittest.TestCase):
         )
         with (
             patch.dict(os.environ, {}, clear=True),
+            patch("api_usage._agy_account_email", return_value=None),
             patch("api_usage.subprocess.run", return_value=completed) as run_mock,
         ):
             result = api_usage.usage_agy(
@@ -344,15 +345,45 @@ class AgyUsageTests(unittest.TestCase):
         self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
         self.assertEqual(kwargs["env"]["https_proxy"], api_usage.DEFAULT_AGY_PROXY)
         self.assertEqual(kwargs["env"]["http_proxy"], api_usage.DEFAULT_AGY_PROXY)
+        self.assertEqual(set(result.keys()), {"gemini", "claude_gpt"})
         self.assertEqual(result["gemini"]["5h"]["remaining_percent"], 90.37)
         self.assertEqual(result["gemini"]["5h"]["used_percent"], 9.63)
         self.assertEqual(result["gemini"]["5h"]["reset_in"], "4h")
         self.assertEqual(result["gemini"]["week"]["remaining_percent"], 96.71)
         self.assertEqual(result["gemini"]["week"]["reset_in"], "6d23h")
         self.assertEqual(result["claude_gpt"]["5h"]["remaining_percent"], 100.0)
-        self.assertEqual(result["claude_gpt"]["week"]["remaining_percent"], 100.0)
-        self.assertEqual(result["argon"]["week"]["remaining_percent"], 98.91)
-        self.assertEqual(result["argon"]["week"]["used_percent"], 1.09)
+        self.assertEqual(result["claude_gpt"]["week"]["remaining_percent"], 92.1)
+
+    def test_agy_plan_label_maps_account_email(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_file = Path(tmp) / "plans.json"
+            plan_file.write_text('{"User@Example.com": "Ultra 5x"}', "utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    api_usage._agy_plan_label("user@example.com", str(plan_file)),
+                    "Ultra 5x",
+                )
+                self.assertIsNone(
+                    api_usage._agy_plan_label("other@example.com", str(plan_file))
+                )
+                self.assertIsNone(
+                    api_usage._agy_plan_label(None, str(plan_file))
+                )
+            with patch.dict(os.environ, {"AGY_PLAN": "Pro"}, clear=True):
+                self.assertEqual(api_usage._agy_plan_label(None, str(plan_file)), "Pro")
+
+    def test_agy_account_email_reads_latest_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "cli-20260101_000000.log").write_text(
+                "OAuth: authenticated successfully as old@example.com\n", "utf-8"
+            )
+            (Path(tmp) / "cli-20260102_000000.log").write_text(
+                "OAuth: authenticated successfully as new@example.com\n", "utf-8"
+            )
+            self.assertEqual(
+                api_usage._agy_account_email(str(Path(tmp) / "cli-*.log")),
+                "new@example.com",
+            )
 
     def test_raises_when_agy_command_fails(self):
         failed = subprocess.CompletedProcess(

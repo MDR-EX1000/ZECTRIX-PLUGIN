@@ -11,12 +11,14 @@ from api_usage import DeepSeekUsageError, KimiUsageError
 
 KIMI_USAGE = {
     "5h": {
-        "used_percent": 25.0,
+        "remaining_percent": 25.0,
+        "used_percent": 75.0,
         "reset_time": "2026-07-17T15:00:00Z",
         "reset_in": "3h",
     },
     "week": {
-        "used_percent": 67.5,
+        "remaining_percent": 67.5,
+        "used_percent": 32.5,
         "reset_time": "2026-07-22T15:00:00Z",
         "reset_in": "5d3h",
     },
@@ -60,18 +62,10 @@ AGY_USAGE = {
             "reset_in": "5h",
         },
         "week": {
-            "remaining_percent": 100.0,
-            "used_percent": 0.0,
+            "remaining_percent": 92.1,
+            "used_percent": 7.9,
             "reset_time": "2026-11-24T11:46:43Z",
             "reset_in": "7d0h",
-        },
-    },
-    "argon": {
-        "week": {
-            "remaining_percent": 98.91,
-            "used_percent": 1.09,
-            "reset_time": "2026-11-24T11:18:20Z",
-            "reset_in": "6d23h",
         },
     },
 }
@@ -133,6 +127,9 @@ class UsageImageTests(unittest.TestCase):
         self.assertIn("68", text_values)
         self.assertNotIn("25.0", text_values)
         self.assertNotIn("67.5", text_values)
+        self.assertTrue(
+            all("USED" not in value and "REMAINING" not in value for value in text_values)
+        )
 
     def test_rejects_unknown_and_duplicate_designs(self):
         current = datetime(2026, 7, 18, tzinfo=timezone.utc)
@@ -483,7 +480,57 @@ class UsageImageTests(unittest.TestCase):
         with Image.open(io.BytesIO(png)) as image:
             self.assertEqual(image.size, (400, 300))
             self.assertEqual(image.mode, "1")
+            self.assertEqual(image.getpixel((0, 100)), 255)
             self.assertEqual(image.getpixel((0, 250)), 0)
+
+    def test_agy_design_renders_expected_model_chips(self):
+        captured_texts = []
+        original_finalize = usage_image._Canvas.finalize
+
+        def spy_finalize(canvas_self):
+            captured_texts.extend(op[1] for op in canvas_self._text_ops)
+            return original_finalize(canvas_self)
+
+        with patch.object(usage_image._Canvas, "finalize", spy_finalize):
+            usage_image.render_usage_image(
+                None,
+                None,
+                agy_usage=AGY_USAGE,
+                updated_at=datetime(2026, 11, 24, 2, 50, tzinfo=timezone.utc),
+                design="agy",
+            )
+
+        self.assertIn("CARBON · NEON · HYDROGEN", captured_texts)
+        self.assertIn("OPUS · SONNET", captured_texts)
+        self.assertNotIn("ARGON", captured_texts)
+        self.assertTrue(
+            all("USED" not in value and "REMAINING" not in value for value in captured_texts)
+        )
+
+    def test_agy_design_renders_full_100_percent_without_overflow(self):
+        full_usage = {
+            "gemini": {
+                "5h": {"remaining_percent": 100.0, "reset_in": "5h"},
+                "week": {"remaining_percent": 100.0, "reset_in": "7d0h"},
+            },
+            "claude_gpt": {
+                "5h": {"remaining_percent": 100.0, "reset_in": "5h"},
+                "week": {"remaining_percent": 100.0, "reset_in": "7d0h"},
+            },
+        }
+        png = usage_image.render_usage_image(
+            None,
+            None,
+            agy_usage=full_usage,
+            updated_at=datetime(2026, 11, 24, 2, 50, tzinfo=timezone.utc),
+            design="agy",
+        )
+
+        with Image.open(io.BytesIO(png)) as image:
+            self.assertEqual(image.size, (400, 300))
+            self.assertEqual(image.mode, "1")
+            # Keep a clear white gap directly to the left of the x=237 divider.
+            self.assertEqual(image.getpixel((233, 125)), 255)
 
     def test_generate_agy_design_auto_selects_agy_provider(self):
         with patch("usage_image.usage_agy", return_value=AGY_USAGE) as mocked_agy:

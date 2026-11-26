@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -35,6 +36,9 @@ DEFAULT_AGY_BIN_CANDIDATES = (
     "~/.gemini/antigravity-cli/bin/agy",
 )
 DEFAULT_AGY_PROXY = "http://127.0.0.1:7890"
+AGY_LOG_GLOB = "~/.gemini/antigravity-cli/log/cli-*.log"
+AGY_PLAN_MAP_FILE = "~/.config/zectrix/agy_plans.json"
+_AGY_AUTH_LOG_RE = re.compile(r"authenticated successfully as (\S+@\S+)")
 
 
 class KimiUsageError(RuntimeError):
@@ -78,6 +82,25 @@ def _used_percent(quota: Any) -> float | None:
         used = limit - remaining
 
     percentage = max(0.0, min(100.0, used / limit * 100.0))
+    return round(percentage, 2)
+
+
+def _remaining_percent(quota: Any) -> float | None:
+    if not isinstance(quota, dict):
+        return None
+
+    limit = _as_number(quota.get("limit"))
+    if limit is None or limit <= 0:
+        return None
+
+    remaining = _as_number(quota.get("remaining"))
+    if remaining is None:
+        used = _as_number(quota.get("used"))
+        if used is None:
+            return None
+        remaining = limit - used
+
+    percentage = max(0.0, min(100.0, remaining / limit * 100.0))
     return round(percentage, 2)
 
 
@@ -198,11 +221,13 @@ def usage_kimi(
 
         {
             "5h": {
+                "remaining_percent": 100.0,
                 "used_percent": 0.0,
                 "reset_time": "2026-07-17T11:47:43.520574Z",
                 "reset_in": "3h",
             },
             "week": {
+                "remaining_percent": 88.0,
                 "used_percent": 12.0,
                 "reset_time": "2026-07-23T15:47:43.520574Z",
                 "reset_in": "6d7h",
@@ -263,11 +288,13 @@ def usage_kimi(
 
     return {
         "5h": {
+            "remaining_percent": _remaining_percent(five_hour),
             "used_percent": _used_percent(five_hour),
             "reset_time": five_hour_reset,
             "reset_in": _reset_in(five_hour_reset, now),
         },
         "week": {
+            "remaining_percent": _remaining_percent(weekly),
             "used_percent": _used_percent(weekly),
             "reset_time": weekly_reset,
             "reset_in": _reset_in(weekly_reset, now),
@@ -822,6 +849,56 @@ def _parse_agy_bucket(
     }
 
 
+def _agy_account_email(log_glob: str = AGY_LOG_GLOB) -> str | None:
+    """Return the account email agy last authenticated as, from its CLI logs."""
+
+    log_files = sorted(
+        Path(log_glob).expanduser().parent.glob(Path(log_glob).name),
+        reverse=True,
+    )
+    for log_file in log_files[:5]:
+        email = None
+        try:
+            with log_file.open(encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    match = _AGY_AUTH_LOG_RE.search(line)
+                    if match:
+                        email = match.group(1).rstrip(",.")
+        except OSError:
+            continue
+        if email:
+            return email
+    return None
+
+
+def _agy_plan_label(
+    email: str | None = None,
+    plan_map_file: str = AGY_PLAN_MAP_FILE,
+) -> str | None:
+    """Map the agy account to a manually configured plan label.
+
+    ``AGY_PLAN`` overrides everything; otherwise the account email is looked up
+    (case-insensitively) in the JSON object at ``plan_map_file``.
+    """
+
+    override = os.getenv("AGY_PLAN", "").strip()
+    if override:
+        return override
+    if not email:
+        return None
+    try:
+        raw = json.loads(Path(plan_map_file).expanduser().read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    wanted = email.strip().lower()
+    for key, value in raw.items():
+        if str(key).strip().lower() == wanted and isinstance(value, str):
+            return value.strip() or None
+    return None
+
+
 def usage_agy(
     agy_bin: str | None = None,
     *,
@@ -912,11 +989,8 @@ def usage_agy(
     claude_week = buckets_by_id.get(
         "3p-weekly"
     ) or buckets_by_group_window.get(("claude and gpt models", "weekly"))
-    argon_week = buckets_by_id.get(
-        "gemini-argon-wtu-weekly"
-    ) or buckets_by_group_window.get(("gemini 4 argon", "weekly"))
 
-    return {
+    result = {
         "gemini": {
             "5h": _parse_agy_bucket(gemini_5h, current),
             "week": _parse_agy_bucket(gemini_week, current),
@@ -925,7 +999,8 @@ def usage_agy(
             "5h": _parse_agy_bucket(claude_5h, current),
             "week": _parse_agy_bucket(claude_week, current),
         },
-        "argon": {
-            "week": _parse_agy_bucket(argon_week, current),
-        },
     }
+    plan = _agy_plan_label(_agy_account_email())
+    if plan:
+        result["plan"] = plan
+    return result

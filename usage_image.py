@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import math
 import os
 import re
 import sys
@@ -481,6 +482,21 @@ def _nested(
     return value.get(field_name)
 
 
+def _remaining_quota_percent(
+    payload: Mapping[str, Any] | None,
+    section: str,
+) -> Decimal | None:
+    """Resolve remaining quota percentage, converting legacy used_percent if needed."""
+
+    remaining = _number(_nested(payload, section, "remaining_percent"))
+    if remaining is not None:
+        return remaining
+    used = _number(_nested(payload, section, "used_percent"))
+    if used is not None:
+        return max(Decimal("0"), min(Decimal("100"), Decimal("100") - used))
+    return None
+
+
 def _s(value: float | int) -> int:
     return round(float(value) * _RENDER_SCALE * _LAYOUT_SCALE)
 
@@ -884,7 +900,7 @@ def _draw_kimi(
         right=190,
         top=_KIMI_PROGRESS_TOP,
         label="5 HOUR",
-        percent=_nested(usage, "5h", "used_percent"),
+        percent=_remaining_quota_percent(usage, "5h"),
         reset_in=_nested(usage, "5h", "reset_in"),
     )
     _draw_progress(
@@ -893,7 +909,7 @@ def _draw_kimi(
         right=386,
         top=_KIMI_PROGRESS_TOP,
         label="WEEK",
-        percent=_nested(usage, "week", "used_percent"),
+        percent=_remaining_quota_percent(usage, "week"),
         reset_in=_nested(usage, "week", "reset_in"),
     )
 
@@ -1236,14 +1252,14 @@ def _draw_v2_kimi(
         draw,
         center_x=105,
         label="5 HOUR",
-        percent=_nested(usage, "5h", "used_percent"),
+        percent=_remaining_quota_percent(usage, "5h"),
         reset_in=_nested(usage, "5h", "reset_in"),
     )
     _draw_v2_gauge(
         draw,
         center_x=295,
         label="WEEK",
-        percent=_nested(usage, "week", "used_percent"),
+        percent=_remaining_quota_percent(usage, "week"),
         reset_in=_nested(usage, "week", "reset_in"),
     )
 
@@ -1462,6 +1478,49 @@ def _draw_v3_number_with_unit(
     )
 
 
+def _draw_fitted_number_with_unit(
+    draw: _Canvas,
+    *,
+    x: float,
+    baseline: float,
+    number_text: str,
+    max_width: float,
+    number_size: int,
+    minimum_number_size: int,
+    unit_size: int,
+    unit_text: str = "%",
+    weight: str = "black",
+) -> None:
+    """Draw a dominant number + unit, shrinking slightly when 3 digits ('100')."""
+
+    chosen_number_size = minimum_number_size
+    for candidate in range(number_size, minimum_number_size - 1, -2):
+        scaled_unit = max(10, round(unit_size * candidate / number_size))
+        total_width = (
+            draw.text_width(number_text, candidate, weight)
+            + 4
+            + draw.text_width(unit_text, scaled_unit, weight)
+        )
+        if total_width <= max_width:
+            chosen_number_size = candidate
+            break
+
+    chosen_unit_size = max(
+        10,
+        round(unit_size * chosen_number_size / number_size),
+    )
+    _draw_v3_number_with_unit(
+        draw,
+        x=x,
+        baseline=baseline,
+        number_text=number_text,
+        number_size=chosen_number_size,
+        unit_text=unit_text,
+        unit_size=chosen_unit_size,
+        weight=weight,
+    )
+
+
 def _draw_v3_header(
     draw: _Canvas,
     current: datetime,
@@ -1518,6 +1577,58 @@ def _v3_cap_middle(
         anchor="la",
     )
     return top + (box[1] + box[3]) / 2 / _LAYOUT_SCALE
+
+
+def _render_agy_logo(kind: str, *, inverted: bool = False) -> Image.Image:
+    """Draw a chunky Gemini/Claude mark that survives 1-bit downscaling.
+
+    The bundled 64px PNGs have hairline details that turn into noise after
+    LANCZOS downscale + hard threshold at ~15px, so the AGY page draws its marks
+    procedurally with strokes thick enough for the 1-bit panel.
+    """
+
+    size = 256
+    ss = 4  # supersample for smooth edges before the downscale
+    big = size * ss
+    mask = Image.new("L", (big, big), 0)
+    draw = ImageDraw.Draw(mask)
+    c = big / 2
+    if kind == "gemini":
+        # Four-point star: |x|^p + |y|^p = 1 with p<1 gives concave sides.
+        p = 0.6
+        r = big * 0.5
+        points = []
+        steps = 720
+        for i in range(steps):
+            t = 2 * math.pi * i / steps
+            cx_, sy_ = math.cos(t), math.sin(t)
+            x = math.copysign(abs(cx_) ** (2 / p), cx_)
+            y = math.copysign(abs(sy_) ** (2 / p), sy_)
+            points.append((c + x * r, c + y * r))
+        draw.polygon(points, fill=255)
+    else:
+        # Claude spark: 8 thick rays of alternating length around a hub.
+        rays = 8
+        width = big * 0.15
+        for i in range(rays):
+            angle = 2 * math.pi * i / rays - math.pi / 2
+            length = big * (0.5 if i % 2 == 0 else 0.42)
+            ex = c + math.cos(angle) * (length - width / 2)
+            ey = c + math.sin(angle) * (length - width / 2)
+            draw.line((c, c, ex, ey), fill=255, width=round(width))
+            draw.ellipse(
+                (ex - width / 2, ey - width / 2, ex + width / 2, ey + width / 2),
+                fill=255,
+            )
+        hub = big * 0.14
+        draw.ellipse((c - hub, c - hub, c + hub, c + hub), fill=255)
+    mask = mask.resize((size, size), Image.Resampling.LANCZOS)
+    ink, paper = (255, 0) if inverted else (0, 255)
+    return Image.composite(
+        Image.new("L", (size, size), ink),
+        Image.new("L", (size, size), paper),
+        mask,
+    )
 
 
 def _load_v3_logo(
@@ -1626,19 +1737,24 @@ def _draw_v3_light_chip(
     draw: _Canvas,
     *,
     text: str,
-    left: float,
     middle: float,
+    left: float | None = None,
+    right: float | None = None,
     size: int = 9,
     pad_x: int = 5,
     pad_y: int = 3,
 ) -> None:
     """Draw an inverted black-on-white chip for the dark metrics band."""
 
+    if (left is None) == (right is None):
+        raise ValueError("pass exactly one of left or right")
     scaled_size = max(1, round(size * _LAYOUT_SCALE))
     font = _font(scaled_size, weight="bold")
     cap_box = draw.draw.textbbox((0, 0), text, font=font, anchor="ls")
     cap_height = (cap_box[3] - cap_box[1]) / _LAYOUT_SCALE
     text_width = draw.text_width(text, size, "bold")
+    if left is None:
+        left = right - text_width - 2 * pad_x
     top = middle - cap_height / 2 - pad_y
     bottom = middle + cap_height / 2 + pad_y
     _draw_chip_background(
@@ -1744,7 +1860,7 @@ def _draw_v3_kimi(
         pad_y=3,
     )
 
-    week_percent = _number(_nested(usage, "week", "used_percent"))
+    week_percent = _remaining_quota_percent(usage, "week")
     if week_percent is None:
         _draw_text(
             draw,
@@ -1754,12 +1870,14 @@ def _draw_v3_kimi(
             weight="black",
         )
     else:
-        _draw_v3_number_with_unit(
+        _draw_fitted_number_with_unit(
             draw,
             x=10,
             baseline=_V3_KIMI_NUMBER_BASELINE,
             number_text=_whole_number(week_percent),
+            max_width=215,
             number_size=115,
+            minimum_number_size=84,
             unit_size=22,
         )
 
@@ -1788,13 +1906,12 @@ def _draw_v3_kimi(
     _draw_text(
         draw,
         (14, _V3_KIMI_CAPTION_TOP),
-        "USED · RESET "
-        f"{_v3_reset_text(_nested(usage, 'week', 'reset_in'))}",
+        f"RESET {_v3_reset_text(_nested(usage, 'week', 'reset_in'))}",
         size=11,
         weight="bold",
     )
 
-    five_hour_percent = _number(_nested(usage, "5h", "used_percent"))
+    five_hour_percent = _remaining_quota_percent(usage, "5h")
     if five_hour_percent is None:
         _draw_text(
             draw,
@@ -1804,12 +1921,14 @@ def _draw_v3_kimi(
             weight="black",
         )
     else:
-        _draw_v3_number_with_unit(
+        _draw_fitted_number_with_unit(
             draw,
             x=_V3_RIGHT_COLUMN_X,
             baseline=100,
             number_text=_whole_number(five_hour_percent),
+            max_width=136,
             number_size=30,
+            minimum_number_size=26,
             unit_size=12,
             weight="black",
         )
@@ -2083,6 +2202,8 @@ def _draw_agy_section_header(
     chip_pad_x: int = 6,
     chip_pad_y: int = 3,
     chip_right: float | None = None,
+    plan_text: str | None = None,
+    plan_size: int = 13,
     right_label: str | None = None,
     right_label_size: int = 10,
     top: int,
@@ -2097,7 +2218,7 @@ def _draw_agy_section_header(
     )
     x = 14.0
     if logo is not None:
-        logo_size = title_size + 1
+        logo_size = title_size + (5 if fg == 0 else 3)
         _paste_v3_logo(draw, logo, x=x, middle=title_mid, size=logo_size)
         x += logo_size + 5
     _draw_text(
@@ -2132,15 +2253,40 @@ def _draw_agy_section_header(
                     pad_y=chip_pad_y,
                 )
         else:
-            _draw_v3_light_chip(
-                draw,
-                text=chip_text,
-                left=chip_left,
-                middle=title_mid,
-                size=chip_size,
-                pad_x=chip_pad_x,
-                pad_y=chip_pad_y,
-            )
+            if chip_right is not None:
+                _draw_v3_light_chip(
+                    draw,
+                    text=chip_text,
+                    right=chip_right,
+                    middle=title_mid,
+                    size=chip_size,
+                    pad_x=chip_pad_x,
+                    pad_y=chip_pad_y,
+                )
+            else:
+                _draw_v3_light_chip(
+                    draw,
+                    text=chip_text,
+                    left=chip_left,
+                    middle=title_mid,
+                    size=chip_size,
+                    pad_x=chip_pad_x,
+                    pad_y=chip_pad_y,
+                )
+    if plan_text:
+        plan_left = x + draw.text_width(title, title_size, "black") + 8
+        plan_kwargs = dict(
+            text=plan_text,
+            left=plan_left,
+            middle=title_mid,
+            size=plan_size,
+            pad_x=chip_pad_x + 1,
+            pad_y=chip_pad_y + 1,
+        )
+        if fg == 0:
+            _draw_v2_chip(draw, **plan_kwargs)
+        else:
+            _draw_v3_light_chip(draw, **plan_kwargs)
     if right_label:
         draw.cap_centered_text(
             (386, title_mid),
@@ -2161,13 +2307,15 @@ def _draw_agy_claude_metric(
     label: str,
     percent: Any,
     reset_in: Any,
+    fg: int = 255,
 ) -> None:
     _draw_text(
         draw,
         (left, top),
         label,
-        size=10,
+        size=9,
         weight="bold",
+        fill=fg,
     )
     _fit_text(
         draw,
@@ -2177,59 +2325,43 @@ def _draw_agy_claude_metric(
         size=9,
         minimum_size=8,
         weight="bold",
+        fill=fg,
         anchor="ra",
     )
     pct_text = _whole_number(percent, "%")
     _draw_text(
         draw,
-        (left, top + 15),
+        (left, top + 16),
         pct_text,
-        size=18,
+        size=21,
         weight="black",
+        fill=fg,
     )
-    bar_left = left + 56
+    bar_left = left + 66
     _draw_bar_box(
         draw,
         left=bar_left,
-        top=top + 21,
+        top=top + 24,
         right=right,
-        bottom=top + 30,
+        bottom=top + 34,
         percent=percent,
-        fg=0,
+        fg=fg,
     )
+
+
+def _agy_plan_text(usage: Mapping[str, Any]) -> str | None:
+    plan = usage.get("plan")
+    if isinstance(plan, str) and plan.strip():
+        return plan.strip().upper()
+    return None
 
 
 def _render_agy(context: RenderContext) -> bytes:
-    """Render Antigravity CLI /usage quotas across Gemini, Claude/GPT, and Argon."""
+    """Render Antigravity CLI /usage quotas with dominant Gemini 4 and compact Claude band."""
 
     current = context.updated_at
     draw = _Canvas(context.width, context.height)
-
-    # Top black banner (same style as daily-grid)
-    draw.fill_rect(0, 0, _s(_LOGICAL_WIDTH), _s(_BANNER_HEIGHT), fill=0)
-    _fit_cap_centered_text(
-        draw,
-        (14, _BANNER_HEIGHT / 2),
-        context.slogan,
-        max_width=282,
-        size=_SLOGAN_SIZE,
-        minimum_size=_SLOGAN_MINIMUM_SIZE,
-        weight=_slogan_weight(context.slogan),
-        fill=255,
-        anchor="lm",
-    )
-    timestamp = (
-        f"{current.day:02d} {_MONTH_NAMES[current.month - 1]} "
-        f"{current.hour:02d}\u2009:\u2009{current.minute:02d}"
-    )
-    draw.cap_centered_text(
-        (386, _BANNER_HEIGHT / 2),
-        timestamp,
-        size=10,
-        weight="bold",
-        fill=255,
-        anchor="rm",
-    )
+    _draw_v3_header(draw, current, context.slogan)
 
     usage = context.agy
     if not isinstance(usage, Mapping):
@@ -2246,138 +2378,173 @@ def _render_agy(context: RenderContext) -> bytes:
         flattened.save(output, format="PNG", optimize=True)
         return output.getvalue()
 
-    gemini_logo = _load_v3_logo(_AGY_GEMINI_LOGO_FILE, silhouette=True)
-    claude_logo = _load_v3_logo(_AGY_CLAUDE_LOGO_FILE, silhouette=True)
-    argon_logo = _load_v3_logo(_AGY_GEMINI_LOGO_FILE, inverted=True)
+    gemini_logo = _render_agy_logo("gemini")
+    claude_logo = _render_agy_logo("claude", inverted=True)
 
-    # Tier 1: Gemini Models (5H + WEEK)
-    gemini = usage.get("gemini") if isinstance(usage.get("gemini"), Mapping) else {}
+    # Primary upper white section: Gemini 4 (WEEK dominant hero + 5 HOUR burst column)
+    gemini = (
+        usage.get("gemini")
+        if isinstance(usage.get("gemini"), Mapping)
+        else {}
+    )
     _draw_agy_section_header(
         draw,
         logo=gemini_logo,
         title="GEMINI 4",
         title_size=14,
-        chip_text="HYDROGEN",
-        chip_size=11,
+        chip_text="CARBON · NEON · HYDROGEN",
+        chip_size=10,
         chip_pad_x=6,
         chip_pad_y=2,
         chip_right=386,
-        right_label=None,
-        top=38,
+        plan_text=_agy_plan_text(usage),
+        top=42,
         fg=0,
     )
-    _draw_progress(
-        draw,
-        left=14,
-        right=190,
-        top=58,
-        label="5 HOUR",
-        percent=_nested(gemini, "5h", "remaining_percent"),
-        reset_in=_nested(gemini, "5h", "reset_in"),
-    )
-    _draw_progress(
-        draw,
-        left=210,
-        right=386,
-        top=58,
-        label="WEEK",
-        percent=_nested(gemini, "week", "remaining_percent"),
-        reset_in=_nested(gemini, "week", "reset_in"),
-    )
 
+    _draw_text(
+        draw,
+        (14, 66),
+        "WEEK",
+        size=11,
+        weight="bold",
+    )
+    _draw_text(
+        draw,
+        (250, 66),
+        "5 HOUR",
+        size=11,
+        weight="bold",
+    )
     draw.line(
-        (_s(14), _s(128), _s(386), _s(128)),
+        (_s(237), _s(68), _s(237), _s(195)),
         fill=0,
         width=_s(2),
     )
 
-    # Tier 2: Claude and GPT models (5H + WEEK)
+    week_remaining = _number(_nested(gemini, "week", "remaining_percent"))
+    if week_remaining is None:
+        _draw_text(
+            draw,
+            (14, 118),
+            "N/A",
+            size=30,
+            weight="black",
+        )
+    else:
+        _draw_fitted_number_with_unit(
+            draw,
+            x=11,
+            baseline=164,
+            number_text=_whole_number(week_remaining),
+            max_width=214,
+            number_size=100,
+            minimum_number_size=82,
+            unit_size=21,
+        )
+
+    _draw_bar_box(
+        draw,
+        left=14,
+        top=174,
+        right=222,
+        bottom=184,
+        percent=week_remaining,
+        fg=0,
+    )
+    _fit_text(
+        draw,
+        (14, 189),
+        f"RESET {_format_reset_in(_nested(gemini, 'week', 'reset_in'))}",
+        max_width=210,
+        size=11,
+        minimum_size=9,
+        weight="bold",
+    )
+
+    five_hour_remaining = _number(_nested(gemini, "5h", "remaining_percent"))
+    if five_hour_remaining is None:
+        _draw_text(
+            draw,
+            (250, 102),
+            "N/A",
+            size=24,
+            weight="black",
+        )
+    else:
+        _draw_fitted_number_with_unit(
+            draw,
+            x=250,
+            baseline=132,
+            number_text=_whole_number(five_hour_remaining),
+            max_width=136,
+            number_size=46,
+            minimum_number_size=38,
+            unit_size=15,
+        )
+
+    _draw_bar_box(
+        draw,
+        left=250,
+        top=146,
+        right=386,
+        bottom=156,
+        percent=five_hour_remaining,
+        fg=0,
+    )
+    _fit_text(
+        draw,
+        (250, 165),
+        f"RESET {_format_reset_in(_nested(gemini, '5h', 'reset_in'))}",
+        max_width=136,
+        size=11,
+        minimum_size=9,
+        weight="bold",
+    )
+
+    # Secondary bottom solid black band: Claude and GPT models (5H + WEEK)
     claude_gpt = (
         usage.get("claude_gpt")
         if isinstance(usage.get("claude_gpt"), Mapping)
         else {}
     )
+    draw.fill_rect(0, _s(205), _s(_LOGICAL_WIDTH), _s(_LOGICAL_HEIGHT), fill=0)
     _draw_agy_section_header(
         draw,
         logo=claude_logo,
         title="CLAUDE",
-        title_size=14,
+        title_size=13,
         chip_text="OPUS · SONNET",
-        chip_size=11,
+        chip_size=10,
         chip_pad_x=6,
         chip_pad_y=2,
         chip_right=386,
-        right_label=None,
-        top=136,
-        fg=0,
+        top=214,
+        fg=255,
     )
     _draw_agy_claude_metric(
         draw,
         left=14,
-        right=190,
-        top=160,
+        right=186,
+        top=242,
         label="5 HOUR",
         percent=_nested(claude_gpt, "5h", "remaining_percent"),
         reset_in=_nested(claude_gpt, "5h", "reset_in"),
+        fg=255,
+    )
+    draw.line(
+        (_s(200), _s(244), _s(200), _s(284)),
+        fill=255,
+        width=_s(2),
     )
     _draw_agy_claude_metric(
         draw,
-        left=210,
+        left=214,
         right=386,
-        top=160,
+        top=242,
         label="WEEK",
         percent=_nested(claude_gpt, "week", "remaining_percent"),
         reset_in=_nested(claude_gpt, "week", "reset_in"),
-    )
-
-    # Tier 3: Gemini 4 Argon (solid black band, white foreground)
-    argon = usage.get("argon") if isinstance(usage.get("argon"), Mapping) else {}
-    draw.fill_rect(0, _s(204), _s(_LOGICAL_WIDTH), _s(_LOGICAL_HEIGHT), fill=0)
-    _draw_agy_section_header(
-        draw,
-        logo=argon_logo,
-        title="GEMINI 4",
-        title_size=14,
-        chip_text="ARGON",
-        chip_size=12,
-        chip_pad_x=6,
-        chip_pad_y=2,
-        right_label="WEEKLY LIMIT",
-        right_label_size=10,
-        top=213,
-        fg=255,
-    )
-
-    argon_remaining = _nested(argon, "week", "remaining_percent")
-    argon_reset = _nested(argon, "week", "reset_in")
-    pct_text = _whole_number(argon_remaining, "%")
-    _draw_text(
-        draw,
-        (14, 242),
-        pct_text,
-        size=30,
-        weight="black",
-        fill=255,
-    )
-    pct_width = draw.text_width(pct_text, 30, "black")
-
-    bar_left = max(110, round(14 + pct_width + 18))
-    _draw_text(
-        draw,
-        (386, 246),
-        f"RESET {_format_reset_in(argon_reset)}",
-        size=11,
-        weight="bold",
-        fill=255,
-        anchor="ra",
-    )
-    _draw_bar_box(
-        draw,
-        left=bar_left,
-        top=266,
-        right=386,
-        bottom=276,
-        percent=argon_remaining,
         fg=255,
     )
 
@@ -2406,7 +2573,7 @@ register_design(
 register_design(
     "agy",
     _render_agy,
-    description="Antigravity CLI quota dashboard for Gemini, Claude/GPT, and Argon",
+    description="Antigravity CLI quota dashboard for Gemini 4 and Claude/GPT",
     auto_rotate=False,
 )
 
